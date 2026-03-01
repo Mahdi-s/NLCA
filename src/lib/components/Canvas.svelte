@@ -16,6 +16,7 @@
 	import { CellAgentManager } from '$lib/nlca/agentManager.js';
 	import type { NlcaNeighborhood } from '$lib/nlca/types.js';
 	import { getNlcaPromptState } from '$lib/stores/nlcaPrompt.svelte.js';
+	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
 	import { packCellColorHexToU32, type PromptConfig } from '$lib/nlca/prompt.js';
 	import { NlcaFrameBuffer, type BufferStatus, type BufferedFrame } from '$lib/nlca/frameBuffer.js';
 	import NlcaTimeline from '$lib/components/NlcaTimeline.svelte';
@@ -29,6 +30,8 @@
 	const simState = getSimulationState();
 	const uiState = getUIState();
 	const audioState = getAudioState();
+	const nlcaSettings = getNlcaSettingsState();
+	const initialNlcaSettings = nlcaSettings.toJSON();
 	
 	// Convert spectrum mode string to number for shader
 	function getSpectrumModeIndex(mode: SpectrumMode): number {
@@ -66,16 +69,20 @@
 	let canvasHeight = $state(0);
 
 	// NLCA (LLM-driven) stepping state - only active when nlcaMode is true
-	let nlcaApiKey = $state('');
-	let nlcaModel = $state('openai/gpt-4.1-mini');
-	let nlcaMaxConcurrency = $state(50);
-	let nlcaBatchSize = $state(200);
-	let nlcaNeighborhood = $state<NlcaNeighborhood>('moore');
+	let nlcaApiKey = $state(initialNlcaSettings.apiKey);
+	let nlcaModel = $state(initialNlcaSettings.model);
+	let nlcaMaxConcurrency = $state(initialNlcaSettings.maxConcurrency);
+	let nlcaBatchSize = $state(initialNlcaSettings.batchSize);
+	let nlcaFrameBatched = $state(initialNlcaSettings.frameBatched);
+	let nlcaFrameStreamed = $state(initialNlcaSettings.frameStreamed);
+	let nlcaMemoryWindow = $state(initialNlcaSettings.memoryWindow);
+	let nlcaNeighborhood = $state<NlcaNeighborhood>(initialNlcaSettings.neighborhood);
 	let nlcaRunId = $state('');
 	let nlcaStepInFlight = $state(false);
 	let nlcaLastError = $state<string | null>(null);
 	let nlcaAvgLatencyMs = $state<number | null>(null);
 	let nlcaLastStoredGen = $state<number | null>(null);
+	let nlcaBenchmarkSummary = $state<string | null>(null);
 	
 	// Cost tracking
 	let nlcaTotalCost = $state(0);
@@ -156,19 +163,96 @@
 	let nlcaTape: NlcaTape | null = null;
 	let nlcaAgentManager: CellAgentManager | null = null;
 
-	function loadNlcaConfigFromStorage() {
-		if (!nlcaMode) return;
-		try {
-			nlcaApiKey = localStorage.getItem('nlca_openrouter_api_key') ?? '';
-			nlcaModel = localStorage.getItem('nlca_model') ?? 'openai/gpt-4.1-mini';
-			nlcaMaxConcurrency = Number(localStorage.getItem('nlca_max_concurrency') ?? '50') || 50;
-			nlcaBatchSize = Number(localStorage.getItem('nlca_batch_size') ?? '200') || 200;
-			const nbh = (localStorage.getItem('nlca_neighborhood') ?? 'moore') as NlcaNeighborhood;
-			nlcaNeighborhood = nbh === 'vonNeumann' || nbh === 'extendedMoore' || nbh === 'moore' ? nbh : 'moore';
-		} catch {
-			// ignore
-		}
+	type AppliedNlcaSettings = {
+		apiKey: string;
+		model: string;
+		maxConcurrency: number;
+		batchSize: number;
+		frameBatched: boolean;
+		frameStreamed: boolean;
+		memoryWindow: number;
+		neighborhood: NlcaNeighborhood;
+		gridWidth: number;
+		gridHeight: number;
+	};
+
+	let lastAppliedNlcaSettings: AppliedNlcaSettings | null = null;
+
+	function resetNlcaBufferState() {
+		nlcaFrameBuffer?.stopComputing();
+		nlcaFrameBuffer = null;
+		nlcaBufferStatus = null;
+		nlcaIsBuffering = false;
+		nlcaBatchRunTarget = 0;
+		nlcaBatchRunCompleted = 0;
 	}
+
+	$effect(() => {
+		if (!nlcaMode) return;
+
+		const cfg = nlcaSettings.toJSON();
+		const applied: AppliedNlcaSettings = {
+			apiKey: cfg.apiKey,
+			model: cfg.model,
+			maxConcurrency: cfg.maxConcurrency,
+			batchSize: cfg.batchSize,
+			frameBatched: cfg.frameBatched,
+			frameStreamed: cfg.frameStreamed,
+			memoryWindow: cfg.memoryWindow,
+			neighborhood: cfg.neighborhood,
+			gridWidth: cfg.gridWidth,
+			gridHeight: cfg.gridHeight
+		};
+
+		const prev = lastAppliedNlcaSettings;
+		lastAppliedNlcaSettings = applied;
+
+		// Keep local state aligned (used by UI + stepper construction).
+		nlcaApiKey = applied.apiKey;
+		nlcaModel = applied.model;
+		nlcaMaxConcurrency = applied.maxConcurrency;
+		nlcaBatchSize = applied.batchSize;
+		nlcaFrameBatched = applied.frameBatched;
+		nlcaFrameStreamed = applied.frameStreamed;
+		nlcaMemoryWindow = applied.memoryWindow;
+		nlcaNeighborhood = applied.neighborhood;
+
+		// Keep rule neighborhood in sync for display + any neighborhood-based visuals.
+		simState.currentRule.neighborhood = applied.neighborhood;
+		simulation?.setRule(simState.currentRule);
+
+		if (!prev) return;
+
+		const dimensionsChanging = applied.gridWidth !== prev.gridWidth || applied.gridHeight !== prev.gridHeight;
+		const neighborhoodChanging = applied.neighborhood !== prev.neighborhood;
+		const stepperConfigChanging =
+			applied.apiKey !== prev.apiKey ||
+			applied.model !== prev.model ||
+			applied.maxConcurrency !== prev.maxConcurrency ||
+			applied.batchSize !== prev.batchSize ||
+			applied.frameBatched !== prev.frameBatched ||
+			applied.frameStreamed !== prev.frameStreamed ||
+			applied.memoryWindow !== prev.memoryWindow ||
+			neighborhoodChanging;
+
+		if (neighborhoodChanging) {
+			nlcaStepper?.updateNeighborhood(applied.neighborhood);
+		}
+
+		if (dimensionsChanging) {
+			if (simulation) resize(applied.gridWidth, applied.gridHeight);
+			return;
+		}
+
+		if (stepperConfigChanging) {
+			resetNlcaBufferState();
+			nlcaRunId = '';
+			nlcaLastStoredGen = null;
+			nlcaAvgLatencyMs = null;
+			nlcaLastError = null;
+			if (simulation) void ensureNlcaReady(simState.gridWidth, simState.gridHeight);
+		}
+	});
 
 	function newRunId(): string {
 		return (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
@@ -223,12 +307,84 @@
 								model: { model: nlcaModel, temperature: 0, maxOutputTokens: 64 },
 								maxConcurrency: nlcaMaxConcurrency,
 								batchSize: nlcaBatchSize,
+								frameBatched: nlcaFrameBatched,
+								frameStreamed: nlcaFrameStreamed,
+								memoryWindow: nlcaMemoryWindow,
 								cellTimeoutMs: 30_000
 							}
 						},
 						nlcaAgentManager
 					)
 				: null;
+	}
+
+	async function runNlcaBenchmark(width = 30, height = 30, frames = 5) {
+		if (!nlcaMode) return;
+		if (!simulation) return;
+
+		// Pause playback to avoid interfering with the main loop
+		simState.isPlaying = false;
+		nlcaBenchmarkSummary = `Benchmark running (${width}×${height}, ${frames} frames)…`;
+		nlcaLastError = null;
+
+		// Resize grid for benchmark (also resets run)
+		resize(width, height);
+		await ensureNlcaReady(width, height);
+		if (!nlcaStepper) {
+			nlcaBenchmarkSummary = 'Benchmark failed: NLCA stepper not initialized';
+			return;
+		}
+
+		const promptConfig: PromptConfig = nlcaPromptState.toPromptConfig();
+		const times: number[] = [];
+		const tokensIn: number[] = [];
+		const tokensOut: number[] = [];
+
+		const beforeCost = nlcaStepper.getCostStats();
+		const beforeFrameStats = nlcaStepper.getFrameBatchedStats();
+
+		let prev = await simulation.getCellDataAsync();
+		let gen = simState.generation;
+
+		for (let i = 0; i < frames; i++) {
+			const c0 = nlcaStepper.getCostStats();
+			const t0 = performance.now();
+			const { next, metrics } = await nlcaStepper.step(prev, width, height, gen, undefined, promptConfig);
+			const dt = performance.now() - t0;
+			times.push(dt);
+
+			const c1 = nlcaStepper.getCostStats();
+			tokensIn.push(Math.max(0, (c1.totalInputTokens ?? 0) - (c0.totalInputTokens ?? 0)));
+			tokensOut.push(Math.max(0, (c1.totalOutputTokens ?? 0) - (c0.totalOutputTokens ?? 0)));
+
+			// Apply frame so you can visually confirm output
+			simulation.setCellData(next);
+			simState.generation = gen + 1;
+			gen++;
+			prev = next;
+
+			// Keep latency display roughly meaningful
+			if (metrics) {
+				let sum = 0;
+				for (let j = 0; j < metrics.latency8.length; j++) sum += metrics.latency8[j] ?? 0;
+				nlcaAvgLatencyMs = (sum / Math.max(1, metrics.latency8.length)) * 10;
+			}
+		}
+
+		const afterCost = nlcaStepper.getCostStats();
+		const afterFrameStats = nlcaStepper.getFrameBatchedStats();
+		const fallbacks = Math.max(0, afterFrameStats.fallbacks - beforeFrameStats.fallbacks);
+
+		const sorted = [...times].sort((a, b) => a - b);
+		const avg = times.reduce((a, b) => a + b, 0) / Math.max(1, times.length);
+		const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? avg;
+		const avgIn = tokensIn.reduce((a, b) => a + b, 0) / Math.max(1, tokensIn.length);
+		const avgOut = tokensOut.reduce((a, b) => a + b, 0) / Math.max(1, tokensOut.length);
+
+		nlcaBenchmarkSummary =
+			`Benchmark ${width}×${height}: avg ${(avg / 1000).toFixed(2)}s, p95 ${(p95 / 1000).toFixed(2)}s, ` +
+			`avg tokens/frame ${Math.round(avgIn)} in / ${Math.round(avgOut)} out, fallbacks ${fallbacks}. ` +
+			`Total tokens: ${afterCost.totalInputTokens - beforeCost.totalInputTokens} in / ${afterCost.totalOutputTokens - beforeCost.totalOutputTokens} out.`;
 	}
 
 	/**
@@ -262,7 +418,7 @@
 					nlcaProgress = { completed, total };
 				}
 			},
-			onFrameComplete: (_frame: BufferedFrame) => {
+			onFrameComplete: async (frame: BufferedFrame) => {
 				// Update cost stats from stepper
 				if (nlcaStepper) {
 					const costStats = nlcaStepper.getCostStats();
@@ -271,6 +427,18 @@
 					nlcaTotalOutputTokens = costStats.totalOutputTokens;
 					nlcaTotalCalls = costStats.callCount;
 					nlcaDebugEntries = nlcaStepper.getDebugLog().slice(-100);
+				}
+
+				// Persist to tape as soon as the frame is computed (batch runs should not depend on playback consumption).
+				if (nlcaTape) {
+					await nlcaTape.appendFrame({
+						runId: nlcaRunId,
+						generation: frame.generation,
+						createdAt: frame.computedAt,
+						stateBits: pack01ToBitset(frame.grid),
+						metrics: frame.metrics ? encodeMetrics(frame.metrics) : undefined
+					});
+					nlcaLastStoredGen = frame.generation;
 				}
 				
 				// Update batch run progress
@@ -291,7 +459,11 @@
 		if (!simulation || !nlcaStepper || !nlcaTape) return;
 		if (nlcaStepInFlight) return;
 		
-		nlcaBatchRunTarget = targetGenerations;
+		const targetFrames = Math.max(1, Math.floor(targetGenerations));
+		const startGen = simState.generation;
+		const stopAtGeneration = startGen + targetFrames;
+
+		nlcaBatchRunTarget = targetFrames;
 		nlcaBatchRunCompleted = 0;
 		nlcaLastError = null;
 		
@@ -299,19 +471,22 @@
 		await initNlcaFrameBuffer();
 		if (!nlcaFrameBuffer) return;
 		
-		// Set target buffer size to match batch run
-		nlcaFrameBuffer.setBufferSizes(5, targetGenerations);
+		// Keep the playback buffer bounded; batch completion is controlled by stopAtGeneration, not buffer size.
+		const minBuffer = Math.min(5, targetFrames);
+		const targetBuffer = Math.min(Math.max(minBuffer, 10), targetFrames);
+		nlcaFrameBuffer.setBufferSizes(minBuffer, targetBuffer);
 		
 		// Start computing
 		nlcaIsBuffering = true;
 		simState.isPlaying = true; // This will start consuming frames
 		
 		try {
-			await nlcaFrameBuffer.startComputing();
+			await nlcaFrameBuffer.startComputing({ stopAtGeneration });
 		} catch (err) {
 			nlcaLastError = err instanceof Error ? err.message : String(err);
-			simState.isPlaying = false;
 		} finally {
+			// Stop playback when the batch run finishes (success or failure).
+			simState.isPlaying = false;
 			nlcaBatchRunTarget = 0;
 		}
 	}
@@ -321,6 +496,7 @@
 	 */
 	export function cancelNlcaBatchRun() {
 		nlcaFrameBuffer?.stopComputing();
+		simState.isPlaying = false;
 		nlcaBatchRunTarget = 0;
 		nlcaBatchRunCompleted = 0;
 		nlcaIsBuffering = false;
@@ -339,11 +515,24 @@
 		return (cellCount * avgTimePerCell * generations) / Math.max(1, nlcaMaxConcurrency);
 	}
 
+	/** Expose NLCA buffer status to parent UI (e.g. Batch Run modal). */
+	export function getNlcaBufferStatus(): BufferStatus | null {
+		return nlcaBufferStatus;
+	}
+
+	export function getNlcaBatchRunTarget(): number {
+		return nlcaBatchRunTarget;
+	}
+
+	export function getNlcaBatchRunCompleted(): number {
+		return nlcaBatchRunCompleted;
+	}
+
 	/**
 	 * Consume a frame from the buffer and display it
 	 */
 	async function consumeBufferedFrame() {
-		if (!simulation || !nlcaFrameBuffer || !nlcaTape) return false;
+		if (!simulation || !nlcaFrameBuffer) return false;
 		
 		const frame = nlcaFrameBuffer.popNextFrame();
 		if (!frame) return false;
@@ -371,16 +560,6 @@
 			nlcaAvgLatencyMs = (sum / Math.max(1, frame.metrics.latency8.length)) * 10;
 			simulation.setAgentMetrics(frame.metrics.latency8, frame.metrics.changed01);
 		}
-		
-		// Store to tape
-		await nlcaTape.appendFrame({
-			runId: nlcaRunId,
-			generation: frame.generation,
-			createdAt: frame.computedAt,
-			stateBits: pack01ToBitset(frame.grid),
-			metrics: frame.metrics ? encodeMetrics(frame.metrics) : undefined
-		});
-		nlcaLastStoredGen = frame.generation;
 		
 		return true;
 	}
@@ -718,60 +897,7 @@
 	}
 
 	onMount(() => {
-		if (nlcaMode) loadNlcaConfigFromStorage();
 		initializeWebGPU();
-
-		// Handle NLCA config changes from settings modal
-		const onNlcaConfigChanged = (e: Event) => {
-			if (!nlcaMode) return;
-			const detail = (e as CustomEvent).detail as
-				| {
-						apiKey?: string;
-						model?: string;
-						maxConcurrency?: number;
-							batchSize?: number;
-						neighborhood?: NlcaNeighborhood;
-						gridWidth?: number;
-						gridHeight?: number;
-					}
-				| undefined;
-			if (!detail) return;
-
-			if (typeof detail.apiKey === 'string') nlcaApiKey = detail.apiKey;
-			if (typeof detail.model === 'string') nlcaModel = detail.model;
-			if (typeof detail.maxConcurrency === 'number' && Number.isFinite(detail.maxConcurrency)) nlcaMaxConcurrency = detail.maxConcurrency;
-			if (typeof detail.batchSize === 'number' && Number.isFinite(detail.batchSize)) nlcaBatchSize = detail.batchSize;
-			if (
-				detail.neighborhood === 'moore' ||
-				detail.neighborhood === 'vonNeumann' ||
-				detail.neighborhood === 'extendedMoore'
-			) {
-				nlcaNeighborhood = detail.neighborhood;
-				simState.currentRule.neighborhood = detail.neighborhood;
-				simulation?.setRule(simState.currentRule);
-				nlcaStepper?.updateNeighborhood(detail.neighborhood);
-			}
-
-			// Check if grid dimensions are changing
-			const newWidth = typeof detail.gridWidth === 'number' ? detail.gridWidth : simState.gridWidth;
-			const newHeight = typeof detail.gridHeight === 'number' ? detail.gridHeight : simState.gridHeight;
-			const dimensionsChanging = newWidth !== simState.gridWidth || newHeight !== simState.gridHeight;
-
-			console.log(`[NLCA] Config changed - current: ${simState.gridWidth}x${simState.gridHeight}, new: ${newWidth}x${newHeight}, changing: ${dimensionsChanging}`);
-
-			if (dimensionsChanging) {
-				// resize() will handle nlcaRunId reset and ensureNlcaReady with new dimensions
-				console.log(`[NLCA] Resizing grid to ${newWidth}x${newHeight}`);
-				resize(newWidth, newHeight);
-			} else {
-				// Only reset run if dimensions stay the same (API key change, etc.)
-				console.log(`[NLCA] Dimensions unchanged, resetting run only`);
-				nlcaRunId = '';
-				if (simulation) {
-					void ensureNlcaReady(simState.gridWidth, simState.gridHeight);
-				}
-			}
-		};
 		// Handle NLCA prompt changes (reset agent sessions)
 		const onNlcaPromptChanged = () => {
 			if (!nlcaMode) return;
@@ -781,10 +907,15 @@
 			nlcaCellColorsPacked = null;
 			simulation?.clearCellColors();
 		};
+		const onNlcaBenchmark = (e: Event) => {
+			if (!nlcaMode) return;
+			const detail = (e as CustomEvent).detail as { width?: number; height?: number; frames?: number } | undefined;
+			void runNlcaBenchmark(detail?.width ?? 30, detail?.height ?? 30, detail?.frames ?? 5);
+		};
 
 		if (nlcaMode) {
-			window.addEventListener('nlca-config-changed', onNlcaConfigChanged as EventListener);
 			window.addEventListener('nlca-prompt-changed', onNlcaPromptChanged);
+			window.addEventListener('nlca-benchmark', onNlcaBenchmark as EventListener);
 		}
 
 		// Handle resize
@@ -805,8 +936,8 @@
 
 		return () => {
 			if (nlcaMode) {
-				window.removeEventListener('nlca-config-changed', onNlcaConfigChanged as EventListener);
 				window.removeEventListener('nlca-prompt-changed', onNlcaPromptChanged);
+				window.removeEventListener('nlca-benchmark', onNlcaBenchmark as EventListener);
 			}
 			resizeObserver.disconnect();
 			if (animationId !== null) {
@@ -838,22 +969,17 @@
 		let height: number;
 
 		if (nlcaMode) {
-			// NLCA mode uses fixed 10x10 grid by default
-			// Override any store defaults - NLCA is a special mode with small grids
-			width = 10;
-			height = 10;
+			const cfg = nlcaSettings.toJSON();
+			width = cfg.gridWidth;
+			height = cfg.gridHeight;
 			simState.gridWidth = width;
 			simState.gridHeight = height;
 			// NLCA mode starts paused - user must manually step or play
 			simState.pause();
 			// Use plane boundary (no wrapping) for NLCA - edges see dead neighbors
 			simState.boundaryMode = 'plane';
+			simState.currentRule.neighborhood = cfg.neighborhood;
 			console.log(`[NLCA] Initialized grid: ${width}x${height} (paused, plane boundary)`);
-			
-			// Force square-grid neighborhoods only for NLCA mode
-			if (simState.currentRule.neighborhood === 'hexagonal' || simState.currentRule.neighborhood === 'extendedHexagonal') {
-				simState.currentRule.neighborhood = 'moore';
-			}
 		} else {
 			// Calculate initial grid size based on actual visible viewport
 			// Uses visualViewport API on mobile for accurate dimensions
@@ -984,28 +1110,25 @@
 			simAccMs += frameDt;
 
 			if (nlcaMode) {
-				// NLCA mode: buffered playback or direct stepping
-				if (nlcaFrameBuffer && nlcaFrameBuffer.getBufferedCount() > 0) {
-					// Buffered playback mode - consume frames from buffer
+				// NLCA mode: buffered playback (batch runs) or direct stepping
+				const bufferActive =
+					!!nlcaFrameBuffer &&
+					(nlcaFrameBuffer.getBufferedCount() > 0 || nlcaBufferStatus?.isComputing || nlcaBatchRunTarget > 0);
+
+				if (bufferActive) {
 					if (simAccMs >= stepMs) {
 						simAccMs = Math.min(simAccMs, stepMs);
 						simAccMs -= stepMs;
 						
-						// Check if we have enough frames to play smoothly
-						if (!nlcaFrameBuffer.hasMinBuffer() && !nlcaIsBuffering) {
-							// Need more frames - wait for buffer to fill
+						const bufferedCount = nlcaFrameBuffer?.getBufferedCount() ?? 0;
+						// Wait for min buffer (or any frames at all, if none exist yet).
+						if (bufferedCount === 0) {
 							nlcaIsBuffering = true;
-						} else if (nlcaFrameBuffer.hasMinBuffer()) {
+						} else if (!nlcaFrameBuffer!.hasMinBuffer() && !nlcaIsBuffering) {
+							nlcaIsBuffering = true;
+						} else if (nlcaFrameBuffer!.hasMinBuffer()) {
 							nlcaIsBuffering = false;
-							// Consume a frame
 							consumeBufferedFrame();
-						}
-						
-						// Keep buffer full by continuing to compute
-						if (!nlcaBufferStatus?.isComputing && !nlcaFrameBuffer.isBufferFull() && nlcaBatchRunTarget > 0) {
-							nlcaFrameBuffer.startComputing().catch(err => {
-								nlcaLastError = err instanceof Error ? err.message : String(err);
-							});
 						}
 					}
 				} else if (!nlcaStepInFlight && simAccMs >= stepMs) {
@@ -2105,6 +2228,9 @@
 
 			{#if nlcaLastError}
 				<div class="err">{nlcaLastError}</div>
+			{/if}
+			{#if nlcaBenchmarkSummary}
+				<div class="muted" style="margin-top: 8px; white-space: pre-wrap;">{nlcaBenchmarkSummary}</div>
 			{/if}
 		</div>
 

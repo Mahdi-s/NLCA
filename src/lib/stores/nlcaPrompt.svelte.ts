@@ -320,6 +320,301 @@ Scene:
 - Reflection: a vertical shimmering stripe below the moon (alternating bright/dim pixels).
 `
 	},
+	{
+		id: 'color-territory-six-sectors',
+		name: 'Color Game: Six-Sector Territories',
+		category: 'scenes',
+		description: 'Local majority rule; color shows dominant direction',
+		task: `You are playing a local-rule color game. Your job is to decide your next state (0/1) and choose a color that visualizes what you locally see.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors like "#A1B2C3".
+3. Be deterministic: the same inputs must produce the same output.
+
+Neighborhood notes:
+- Use the provided "neighborhood" array of [dx, dy, state]. Do NOT assume a fixed neighborhood size or shape.
+
+Game rule (state):
+1. Let N = neighborhood.length (can vary by neighborhood type).
+2. Let alive = number of neighbors with state=1 (you may use the provided "neighbors" count).
+3. Majority rule: if alive > floor(N/2) then state=1 else state=0.
+
+Visualization rule (color):
+1. Partition alive neighbors into 6 buckets based on (dx,dy):
+   - NORTH: dy<0
+   - SOUTH: dy>0
+   - WEST: dx<0
+   - EAST: dx>0
+   - DIAG_PLUS: dx and dy have the same sign (dx*dy>0)
+   - DIAG_MINUS: dx and dy have opposite signs (dx*dy<0)
+2. Find the bucket with the highest alive count (ties broken deterministically by (x + 3*y + generation) mod numberOfTiedBuckets).
+3. Choose the bucket color:
+   - NORTH "#5BC0EB", SOUTH "#FDE74C", WEST "#9BC53D", EAST "#C3423F", DIAG_PLUS "#6D597A", DIAG_MINUS "#3D5A80"
+4. If you output state=0, darken the chosen bucket color by using a darker variant:
+   - NORTH "#12313B", SOUTH "#3B350F", WEST "#1D2B12", EAST "#3B1412", DIAG_PLUS "#201A24", DIAG_MINUS "#131D2A"`
+	},
+	{
+		id: 'color-phase-waves-rps',
+		name: 'Color Game: Phase-Wave Bands',
+		category: 'scenes',
+		description: '3-phase rule; color shows local phase and density',
+		task: `You are generating moving “phase bands” using only local neighbor information. The state is binary, but the color shows the phase.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors like "#A1B2C3".
+3. Be deterministic.
+
+Definitions:
+- N = neighborhood.length
+- alive = count of neighbors with state=1
+- frac = alive / max(1, N)
+- phase = (generation + x + 2*y) mod 3  (0,1,2)
+
+Game rule (state):
+1. Each phase has a target neighbor density and tolerance:
+   - phase 0: target 0.30, tolerance 0.10
+   - phase 1: target 0.45, tolerance 0.10
+   - phase 2: target 0.60, tolerance 0.10
+2. If |frac - target| <= tolerance then state=1 else state=0.
+
+Visualization rule (color):
+1. Base phase colors:
+   - phase 0: "#2D6CDF" (blue)
+   - phase 1: "#B5179E" (magenta)
+   - phase 2: "#F77F00" (orange)
+2. If state=0, use a dark background-tinted version of that phase:
+   - phase 0: "#0E1E3A"
+   - phase 1: "#2A0A24"
+   - phase 2: "#2E1400"
+3. Optional highlight: if frac is within half the tolerance of target, slightly brighten (choose a fixed brighter hex per phase):
+   - phase 0 highlight "#6FA8FF"
+   - phase 1 highlight "#FF5ACD"
+   - phase 2 highlight "#FFB000"`
+	},
+	{
+		id: 'color-edge-vs-center',
+		name: 'Color Game: Edge-Seekers vs Center-Seekers',
+		category: 'scenes',
+		description: 'Two behaviors by position; boundaries become vivid',
+		task: `You have two roles based on where you live: edge cells prefer sparse neighborhoods, center cells prefer dense neighborhoods. Use ONLY local info plus your own position.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Role:
+- distToEdge = min(x, y, (gridWidth-1 - x), (gridHeight-1 - y))
+- If distToEdge <= 1 you are an EDGE_SEEKER, otherwise a CENTER_SEEKER.
+
+Game rule (state):
+- N = neighborhood.length, alive = neighbor alive count, frac = alive / max(1,N)
+- EDGE_SEEKER: state=1 if frac <= 0.20 else state=0
+- CENTER_SEEKER: state=1 if frac >= 0.45 else state=0
+
+Visualization rule (color):
+- EDGE_SEEKER: state=1 "#00D9C0", state=0 "#08201D"
+- CENTER_SEEKER: state=1 "#7AE582", state=0 "#0E2210"
+
+Keep it crisp: your role is purely positional; do not invent hidden memory beyond your current state input.`
+	},
+	{
+		id: 'color-stubborn-anchors-consensus',
+		name: 'Color Game: Stubborn Anchors',
+		category: 'scenes',
+		description: 'Corner anchors + consensus hysteresis; large-scale fronts',
+		task: `This is an opinion-dynamics game with “stubborn anchors” at the corners. Anchors never change; everyone else uses local consensus with hysteresis.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Anchors (always state=1):
+- Top-left (0,0), top-right (gridWidth-1,0), bottom-left (0,gridHeight-1), bottom-right (gridWidth-1,gridHeight-1).
+
+Game rule (state):
+1. If you are an anchor cell, output state=1.
+2. Otherwise compute N, alive, frac = alive/max(1,N).
+3. Use hysteresis with your current "state":
+   - If state==1, stay alive if frac >= 0.35, else become 0.
+   - If state==0, become alive if frac >= 0.55, else stay 0.
+
+Visualization rule (color):
+1. Color shows which corner you are closest to (by Manhattan distance):
+   - closest top-left: "#3A86FF"
+   - closest top-right: "#FF006E"
+   - closest bottom-left: "#06D6A0"
+   - closest bottom-right: "#FFBE0B"
+2. If you output state=0, use a dark version of the same corner color:
+   - "#10244A", "#3A0019", "#06261D", "#3A2A00"`
+	},
+	{
+		id: 'color-parity-interference',
+		name: 'Color Game: Parity Interference',
+		category: 'scenes',
+		description: 'Odd/even neighbor parity causes flicker and lattices',
+		task: `You will create parity-based interference patterns. Your next state depends on whether the alive neighbor count is odd or even.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Game rule (state):
+1. Let alive = neighbor alive count (use "neighbors" or count neighborhood states).
+2. Let parity = alive mod 2 (0=even, 1=odd).
+3. Next state = state XOR parity.
+
+Visualization rule (color):
+- If parity is even:
+  - state=1 "#4CC9F0"
+  - state=0 "#0B1E26"
+- If parity is odd:
+  - state=1 "#F9C74F"
+  - state=0 "#2A1F08"
+
+This rule should work for any neighborhood definition because it relies only on the provided alive count.`
+	},
+	{
+		id: 'color-heat-threshold',
+		name: 'Color Game: Heat Threshold',
+		category: 'scenes',
+		description: 'Binary reaction-to-density; color shows “temperature”',
+		task: `Treat your neighborhood density as “heat”. You turn on in the hot regime, turn off in the cold regime, and keep your current state in between.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Game rule (state):
+1. N = neighborhood.length, alive = neighbor alive count, frac = alive / max(1,N).
+2. If frac >= 0.60 => state=1 (hot)
+3. Else if frac <= 0.30 => state=0 (cold)
+4. Else keep your current input state.
+
+Visualization rule (color):
+1. Map frac into 4 bands and choose a color:
+   - frac < 0.25 => "#1D3557" (cold navy)
+   - 0.25..0.45 => "#457B9D" (cool blue)
+   - 0.45..0.60 => "#F4A261" (warm)
+   - > 0.60 => "#E63946" (hot red)
+2. If state=0, darken by using a darker fixed palette:
+   - "#0B1422", "#152634", "#3A2416", "#3A0F12"`
+	},
+	{
+		id: 'color-hysteresis-memory',
+		name: 'Color Game: Hysteresis Memory',
+		category: 'scenes',
+		description: 'Different on/off thresholds; color highlights switching',
+		task: `Use your current state as one-bit memory. Turning on requires stronger neighbor support than staying on. This creates sticky domains and sharp boundaries.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Game rule (state):
+1. N = neighborhood.length, alive = neighbor alive count, frac = alive / max(1,N).
+2. If your current state==1:
+   - stay on if frac >= 0.25, else turn off.
+3. If your current state==0:
+   - turn on if frac >= 0.55, else stay off.
+
+Visualization rule (color):
+- If your next state equals your current state (stable):
+  - state=1 "#2A9D8F"
+  - state=0 "#0E1F1C"
+- If your next state differs from your current state (switching):
+  - next state=1 (turning on) "#E9C46A"
+  - next state=0 (turning off) "#E76F51"`
+	},
+	{
+		id: 'color-local-symmetry-police',
+		name: 'Color Game: Local Symmetry Police',
+		category: 'scenes',
+		description: 'Turns on when its neighborhood is locally symmetric',
+		task: `You enforce LOCAL symmetry in the pattern. You can only see your neighborhood samples, so judge symmetry within that set (not global symmetry of the whole grid).
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Game rule (state):
+1. Consider mirror symmetry across the vertical axis through you: (dx,dy) mirrors to (-dx,dy).
+2. For each neighbor sample that has a mirrored counterpart present, check if their states match.
+3. Let pairs = number of mirrored pairs you can compare, matches = number of those pairs with equal state.
+4. If pairs == 0, set symmetryScore = 1.0 (trivially symmetric), else symmetryScore = matches / pairs.
+5. If symmetryScore >= 0.70 then state=1 else state=0.
+
+Visualization rule (color):
+- If symmetryScore >= 0.90: "#8EECF5" (very symmetric)
+- Else if symmetryScore >= 0.70: "#B8F2E6" (somewhat symmetric)
+- Else: "#F28482" (asymmetric)
+- If state=0, use a dark background instead: "#0C1517"`
+	},
+	{
+		id: 'color-signal-couriers',
+		name: 'Color Game: Signal Couriers',
+		category: 'scenes',
+		description: 'Sparse “signal” propagation; color shows flow direction',
+		task: `Create sparse traveling signals. The rule favors thin filaments: single-neighbor activation propagates, but crowds extinguish. Color shows the local flow direction implied by alive neighbors.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Game rule (state):
+1. Let alive = neighbor alive count.
+2. If alive == 1 => state=1 (propagate a lone signal).
+3. Else if alive >= 3 => state=0 (overcrowding extinguishes).
+4. Else keep your current input state.
+
+Visualization rule (color):
+1. Compute a crude flow vector from alive neighbors:
+   - vx = sum(dx * state) over neighbor samples
+   - vy = sum(dy * state) over neighbor samples
+2. If state=0, use background "#070A12".
+3. If state=1, choose a direction color by the signs of (vx,vy):
+   - vx>=0 and vy<0 => "#00BBF9" (NE-ish)
+   - vx<0 and vy<0 => "#00F5D4" (NW-ish)
+   - vx>=0 and vy>=0 => "#F15BB5" (SE-ish)
+   - vx<0 and vy>=0 => "#FEE440" (SW-ish)
+If vx==0 and vy==0, use "#FFFFFF".`
+	},
+	{
+		id: 'color-coalition-parity',
+		name: 'Color Game: Coalition Parity',
+		category: 'scenes',
+		description: 'Two factions by coordinate parity; local coalitions decide life',
+		task: `There are two factions: EVEN cells and ODD cells, determined by (x+y) parity. You turn on only when your faction has local support. This showcases how neighborhood geometry changes coalition outcomes.
+
+Color mode rules (IMPORTANT):
+1. Always output exactly one JSON object: {"state":0,"color":"#RRGGBB"} or {"state":1,"color":"#RRGGBB"}.
+2. Use ONLY uppercase hex colors.
+3. Be deterministic.
+
+Definitions:
+- myFaction = (x + y) mod 2  (0=EVEN, 1=ODD)
+- For each neighbor sample [dx,dy,s], the neighbor's parity is (x+dx + y+dy) mod 2.
+
+Game rule (state):
+1. Count aliveSame = number of alive neighbors whose parity matches myFaction.
+2. Count aliveOther = number of alive neighbors whose parity differs from myFaction.
+3. If aliveSame >= aliveOther + 1 => state=1 else state=0.
+
+Visualization rule (color):
+- EVEN faction: state=1 "#3A0CA3", state=0 "#12052F"
+- ODD faction: state=1 "#F72585", state=0 "#2A0416"
+- If aliveSame >= aliveOther + 3 (strong majority), brighten:
+  - EVEN "#7209B7"
+  - ODD "#FF4DA6"`
+	},
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// META

@@ -4,6 +4,7 @@
 	import { bringToFront, setModalPosition, getModalState } from '$lib/stores/modalManager.svelte.js';
 	import { getSimulationState } from '$lib/stores/simulation.svelte.js';
 	import type { NlcaNeighborhood } from '$lib/nlca/types.js';
+	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
 
 	interface Props {
 		onclose: () => void;
@@ -12,33 +13,33 @@
 	let { onclose }: Props = $props();
 	const modalState = $derived(getModalState('nlcaSettings'));
 	const simState = getSimulationState();
+	const nlcaSettings = getNlcaSettingsState();
 
 	let apiKey = $state('');
-	let model = $state('openai/gpt-4.1-mini');
+	let model = $state('openai/gpt-4o-mini');
 	let maxConcurrency = $state(50);
+	let batchSize = $state(200);
+	let frameBatched = $state(true);
+	let frameStreamed = $state(true);
+	let memoryWindow = $state(3);
 	let gridWidth = $state(25);
 	let gridHeight = $state(25);
 	let neighborhood = $state<NlcaNeighborhood>('moore');
 
 	onMount(() => {
-		try {
-			// Use env vars as defaults, then localStorage, then fallback defaults
-			const envApiKey = import.meta.env.VITE_NLCA_OPENROUTER_API_KEY ?? '';
-			const envModel = import.meta.env.VITE_NLCA_MODEL ?? 'openai/gpt-4.1-mini';
-			
-			apiKey = localStorage.getItem('nlca_openrouter_api_key') ?? envApiKey;
-			model = localStorage.getItem('nlca_model') ?? envModel;
-			maxConcurrency = Number(localStorage.getItem('nlca_max_concurrency') ?? '50') || 50;
-			const nbh = (localStorage.getItem('nlca_neighborhood') ?? 'moore') as NlcaNeighborhood;
-			neighborhood = nbh === 'vonNeumann' || nbh === 'extendedMoore' || nbh === 'moore' ? nbh : 'moore';
-		} catch {
-			// ignore
-		}
+		apiKey = nlcaSettings.apiKey;
+		model = nlcaSettings.model;
+		maxConcurrency = nlcaSettings.maxConcurrency;
+		batchSize = nlcaSettings.batchSize;
+		frameBatched = nlcaSettings.frameBatched;
+		frameStreamed = nlcaSettings.frameStreamed;
+		memoryWindow = nlcaSettings.memoryWindow;
+		neighborhood = nlcaSettings.neighborhood;
 
-		// Default to 10x10 for NLCA, or current sim dimensions if already set
+		// Default to 10x10 for NLCA, or current sim dimensions if already set.
 		if (simState.gridWidth === 0 || simState.gridHeight === 0) {
-			gridWidth = 10;
-			gridHeight = 10;
+			gridWidth = nlcaSettings.gridWidth;
+			gridHeight = nlcaSettings.gridHeight;
 		} else {
 			gridWidth = simState.gridWidth;
 			gridHeight = simState.gridHeight;
@@ -51,28 +52,22 @@
 	function handleDragEnd(position: { x: number; y: number }) {
 		setModalPosition('nlcaSettings', position);
 	}
+	function runBenchmark() {
+		window.dispatchEvent(new CustomEvent('nlca-benchmark', { detail: { width: 30, height: 30, frames: 5 } }));
+		onclose();
+	}
 	function save() {
-		try {
-			localStorage.setItem('nlca_openrouter_api_key', apiKey);
-			localStorage.setItem('nlca_model', model);
-			localStorage.setItem('nlca_max_concurrency', String(maxConcurrency));
-			localStorage.setItem('nlca_neighborhood', neighborhood);
-		} catch {
-			// ignore
-		}
+		nlcaSettings.apiKey = apiKey;
+		nlcaSettings.model = model;
+		nlcaSettings.maxConcurrency = maxConcurrency;
+		nlcaSettings.batchSize = batchSize;
+		nlcaSettings.frameBatched = frameBatched;
+		nlcaSettings.frameStreamed = frameBatched ? frameStreamed : false;
+		nlcaSettings.memoryWindow = memoryWindow;
+		nlcaSettings.neighborhood = neighborhood;
+		nlcaSettings.gridWidth = gridWidth;
+		nlcaSettings.gridHeight = gridHeight;
 
-		window.dispatchEvent(
-			new CustomEvent('nlca-config-changed', {
-				detail: {
-					apiKey,
-					model,
-					maxConcurrency,
-					neighborhood,
-					gridWidth,
-					gridHeight
-				}
-			})
-		);
 		onclose();
 	}
 </script>
@@ -115,6 +110,26 @@
 				<input type="number" min="1" max="200" bind:value={maxConcurrency} />
 				<small style="color: var(--ui-text); opacity: 0.7;">Parallel LLM calls (higher = faster but more rate limits)</small>
 			</label>
+			<label>
+				<span>Batch size (cell-mode)</span>
+				<input type="number" min="1" max="2000" bind:value={batchSize} />
+				<small style="color: var(--ui-text); opacity: 0.7;">Cells per proxy request when frame-batched mode is off</small>
+			</label>
+			<label>
+				<span>Frame-batched mode (one OpenRouter call per frame)</span>
+				<input type="checkbox" bind:checked={frameBatched} />
+				<small style="color: var(--ui-text); opacity: 0.7;">Fastest for 30×30; uses structured outputs</small>
+			</label>
+			<label>
+				<span>Stream frame updates (SSE)</span>
+				<input type="checkbox" bind:checked={frameStreamed} disabled={!frameBatched} />
+				<small style="color: var(--ui-text); opacity: 0.7;">Progressive updates while waiting (requires frame-batched mode)</small>
+			</label>
+			<label>
+				<span>Memory window (frame-batched)</span>
+				<input type="number" min="0" max="16" bind:value={memoryWindow} />
+				<small style="color: var(--ui-text); opacity: 0.7;">Per-cell history length included in prompts (0 = stateless)</small>
+			</label>
 			<div class="row">
 				<label>
 					<span>Grid width</span>
@@ -128,6 +143,7 @@
 		</div>
 
 		<div class="footer">
+			<button class="btn" onclick={runBenchmark}>Benchmark 30×30</button>
 			<button class="btn" onclick={onclose}>Cancel</button>
 			<button class="btn primary" onclick={save}>Save</button>
 		</div>
@@ -224,5 +240,3 @@
 		}
 	}
 </style>
-
-

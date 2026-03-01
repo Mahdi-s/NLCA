@@ -5,9 +5,10 @@
 	interface Props {
 		onclose: () => void;
 		onstarttour: () => void;
+		variant?: 'gol' | 'nlca';
 	}
 
-	let { onclose, onstarttour }: Props = $props();
+	let { onclose, onstarttour, variant = 'gol' }: Props = $props();
 
 	// Detect if we're on a touch device
 	const isMobile = typeof window !== 'undefined' && 
@@ -36,6 +37,7 @@
 <div class="help-overlay" role="dialog" aria-modal="true" tabindex="-1">
 	<div 
 		class="help-panel"
+		class:help-panel-nlca={variant === 'nlca'}
 		role="presentation"
 		style="z-index: {modalState.zIndex};"
 		onclick={handleModalClick}
@@ -54,7 +56,9 @@
 					<path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" />
 					<circle cx="12" cy="17" r="0.5" fill="currentColor" />
 				</svg>
-				{isMobile ? 'Touch Controls' : 'Keyboard Shortcuts'}
+				{variant === 'nlca'
+					? 'NLCA Help'
+					: (isMobile ? 'Touch Controls' : 'Keyboard Shortcuts')}
 			</h2>
 			<div class="header-actions">
 				<button class="tour-btn" onclick={handleStartTour}>
@@ -74,7 +78,58 @@
 		</div>
 
 		<div class="help-content">
-			{#if isMobile}
+			{#if variant === 'nlca'}
+				<div class="columns nlca-help">
+					<div class="column">
+						<section class="shortcut-group">
+							<h3>How It Works</h3>
+							<div class="shortcut"><kbd>Gen</kbd><span>One “generation” = the model decides the next state for every cell, then the grid updates all at once.</span></div>
+							<div class="shortcut"><kbd>In</kbd><span>Each decision sees your coordinates, previous state, neighborhood snapshot, and (optionally) short per-cell history.</span></div>
+							<div class="shortcut"><kbd>Out</kbd><span>Each cell returns `0` or `1` (and optional color). Outputs are applied synchronously to form the next frame.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Neighborhoods</h3>
+							<div class="shortcut"><kbd>M</kbd><span>Moore (8) — the 8 surrounding cells.</span></div>
+							<div class="shortcut"><kbd>V</kbd><span>Von Neumann (4) — up/down/left/right.</span></div>
+							<div class="shortcut"><kbd>X</kbd><span>Extended Moore (24) — 5×5 ring around the cell.</span></div>
+							<div class="shortcut"><kbd>Edge</kbd><span>NLCA uses plane boundaries by default (outside the grid counts as dead).</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Stepping Modes</h3>
+							<div class="shortcut"><kbd>Frame</kbd><span>Frame-batched: 1 model call per generation (fastest). Requires structured JSON output.</span></div>
+							<div class="shortcut"><kbd>SSE</kbd><span>Stream frame updates: progressive fill while waiting (works only in frame-batched mode).</span></div>
+							<div class="shortcut"><kbd>Cell</kbd><span>Cell-mode: many parallel calls (one per cell). Uses `Max Concurrency` + `Batch size`.</span></div>
+						</section>
+					</div>
+
+					<div class="column">
+						<section class="shortcut-group">
+							<h3>Prompts & Behavior</h3>
+							<div class="shortcut"><kbd>Preset</kbd><span>Pick a task preset, then tweak the task text to shape emergent behavior.</span></div>
+							<div class="shortcut"><kbd>Task</kbd><span>The task is the “rule” cells follow. For stable patterns, describe the goal + local heuristics.</span></div>
+							<div class="shortcut"><kbd>Adv</kbd><span>Advanced Mode lets you edit the full template (with placeholders like {'{{GRID}}'} and {'{{OUTPUT_CONTRACT}}'}).</span></div>
+							<div class="shortcut"><kbd>Color</kbd><span>Enable Color Mode to let alive cells also emit a `#RRGGBB` color (useful for scenes/gradients).</span></div>
+							<div class="shortcut"><kbd>View</kbd><span>`View Prompt` shows the exact prompt being fed to the model for the current step mode.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Settings</h3>
+							<div class="shortcut"><kbd>Key</kbd><span>Set your OpenRouter API key + model in `NLCA Settings`.</span></div>
+							<div class="shortcut"><kbd>Conc</kbd><span>`Max Concurrency` trades speed for rate-limit pressure (cell-mode).</span></div>
+							<div class="shortcut"><kbd>Mem</kbd><span>`Memory window` controls how much per-cell history is included (0 = stateless).</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Debug & Playback</h3>
+							<div class="shortcut"><kbd>Dbg</kbd><span>`Show Debug` logs per-cell inputs/outputs and timings (useful for diagnosing prompt failures).</span></div>
+							<div class="shortcut"><kbd>Run</kbd><span>`Batch Run` precomputes N generations; `Playback` scrubs cached frames and stores runs locally.</span></div>
+							<div class="shortcut"><kbd>$</kbd><span>Cost, calls, and latency update as the simulation runs.</span></div>
+						</section>
+					</div>
+				</div>
+			{:else if isMobile}
 				<!-- Mobile Touch Controls -->
 				<div class="touch-controls">
 					<section class="shortcut-group">
@@ -241,6 +296,10 @@
 		will-change: transform;
 	}
 
+	.help-panel.help-panel-nlca {
+		width: min(720px, calc(100vw - 24px));
+	}
+
 	.help-panel:global(.dragging) {
 		box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
 	}
@@ -328,6 +387,22 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 1rem;
+	}
+
+	.nlca-help .shortcut {
+		align-items: flex-start;
+		gap: 0.45rem;
+	}
+
+	.nlca-help .shortcut span {
+		margin-left: 0;
+		flex: 1;
+	}
+
+	@media (max-width: 520px) {
+		.help-panel.help-panel-nlca .columns {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.shortcut-group {

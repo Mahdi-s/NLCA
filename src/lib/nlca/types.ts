@@ -69,8 +69,22 @@ export interface NlcaOrchestratorConfig {
 	maxConcurrency: number;
 	/** Cells per proxy request (higher amortizes overhead, but reduces UI streaming granularity). */
 	batchSize: number;
+	/** If true, decide the whole frame in one structured-output call. */
+	frameBatched: boolean;
+	/** If true, stream frame-batched decisions as SSE for progressive updates. */
+	frameStreamed: boolean;
+	/** Per-cell decision history length included in frame-batched prompts. */
+	memoryWindow: number;
 	/** Abort a cell call if it exceeds this */
 	cellTimeoutMs: number;
+	/** Number of parallel frame chunks to dispatch (default: 1 = sequential). Higher values improve throughput. */
+	parallelChunks?: number;
+	/** Cells per chunk when splitting frame-batched calls (default: 300). */
+	chunkSize?: number;
+	/** If true, use compressed payload format to reduce tokens (default: false). */
+	compressPayload?: boolean;
+	/** If true, deduplicate identical cell contexts within a generation (default: false). */
+	deduplicateRequests?: boolean;
 }
 
 export interface NlcaRunConfig {

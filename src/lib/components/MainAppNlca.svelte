@@ -65,7 +65,11 @@
 	let isRecording = $state(false);
 	onMount(() => {
 		const interval = setInterval(() => {
-			if (canvas) isRecording = canvas.getIsRecording();
+			if (!canvas) return;
+			isRecording = canvas.getIsRecording();
+			nlcaBufferStatus = canvas.getNlcaBufferStatus();
+			nlcaBatchRunTarget = canvas.getNlcaBatchRunTarget();
+			nlcaBatchRunCompleted = canvas.getNlcaBatchRunCompleted();
 		}, 100);
 		return () => clearInterval(interval);
 	});
@@ -198,7 +202,7 @@
 	/>
 
 	{#if showHelp}
-		<HelpOverlay onclose={() => closeModal('help')} onstarttour={() => {}} />
+		<HelpOverlay variant="nlca" onclose={() => closeModal('help')} onstarttour={() => {}} />
 	{/if}
 
 	{#if showAbout}

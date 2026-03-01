@@ -3,6 +3,7 @@
 	import { bringToFront, setModalPosition, getModalState } from '$lib/stores/modalManager.svelte.js';
 	import { getSimulationState } from '$lib/stores/simulation.svelte.js';
 	import { buildCellSystemPrompt, buildOutputContractText, type PromptConfig } from '$lib/nlca/prompt.js';
+	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
 	import { 
 		getNlcaPromptState, 
 		SYSTEM_PLACEHOLDERS, 
@@ -22,6 +23,7 @@
 	const modalState = $derived(getModalState('nlcaPrompt'));
 	const simState = getSimulationState();
 	const promptState = getNlcaPromptState();
+	const nlcaSettings = getNlcaSettingsState();
 
 	// Preset categories for UI tabs
 	const PRESET_CATEGORIES: { id: PresetCategory; label: string }[] = [
@@ -65,6 +67,8 @@
 	let sampleX = $state(5);
 	let sampleY = $state(5);
 
+	const frameBatched = $derived.by(() => nlcaSettings.frameBatched);
+
 	// Generate preview based on local editing state
 	const previewPrompt = $derived.by(() => {
 		const width = simState.gridWidth || 10;
@@ -80,12 +84,27 @@
 		return buildCellSystemPrompt(0, sampleX, sampleY, width, height, cfg);
 	});
 
-	const outputContractText = $derived.by(() => buildOutputContractText({
+	const cellModeOutputContractText = $derived.by(() => buildOutputContractText({
 		taskDescription: localTask,
 		useAdvancedMode: localAdvancedMode,
 		advancedTemplate: localTemplate,
 		cellColorHexEnabled: localCellColorHexEnabled
 	}));
+
+	const frameModeOutputContractText = $derived.by(() => {
+		const wantColor = localCellColorHexEnabled === true;
+		return [
+			'Return ONLY JSON (no markdown, no prose, no extra keys).',
+			wantColor
+				? 'Format: {"decisions":[{"cellId":0,"state":0|1,"color":"#RRGGBB"}, ...]}'
+				: 'Format: {"decisions":[{"cellId":0,"state":0|1}, ...]}',
+			wantColor ? '- "color" must be exactly 7 chars, leading "#", 6 uppercase hex digits (0-9, A-F).' : ''
+		]
+			.filter(Boolean)
+			.join('\n');
+	});
+
+	const activeOutputContractText = $derived.by(() => (frameBatched ? frameModeOutputContractText : cellModeOutputContractText));
 
 	const templateHasOutputContractPlaceholder = $derived.by(() =>
 		(localTemplate ?? '').includes('{{OUTPUT_CONTRACT}}')
@@ -280,7 +299,10 @@
 				</p>
 				<div class="contract-panel">
 					<div class="contract-title">Output contract (enforced)</div>
-					<pre class="example-code">{outputContractText}</pre>
+					<pre class="example-code">{activeOutputContractText}</pre>
+					<p class="hint">
+						Currently enforcing: <strong>{frameBatched ? 'Frame-batched' : 'Cell-mode'}</strong>.
+					</p>
 					{#if localAdvancedMode}
 						<p class="hint">
 							{#if templateHasOutputContractPlaceholder}

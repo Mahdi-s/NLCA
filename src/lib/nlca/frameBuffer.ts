@@ -56,7 +56,7 @@ export interface BufferComputeConfig {
 	/** Callback for progress updates */
 	onProgress?: NlcaProgressCallback;
 	/** Callback when frame completes */
-	onFrameComplete?: (frame: BufferedFrame) => void;
+	onFrameComplete?: (frame: BufferedFrame) => void | Promise<void>;
 	/** Callback when buffer status changes */
 	onStatusChange?: (status: BufferStatus) => void;
 }
@@ -88,6 +88,8 @@ export class NlcaFrameBuffer {
 	private lastGrid: Uint32Array | null = null;
 	/** Current generation counter */
 	private currentGeneration = 0;
+	/** Optional stop condition for background runs */
+	private stopAtGeneration: number | null = null;
 
 	constructor(minBufferSize = 5, targetBufferSize = 10) {
 		this.minBufferSize = minBufferSize;
@@ -203,25 +205,36 @@ export class NlcaFrameBuffer {
 
 	/**
 	 * Start computing frames to fill the buffer
-	 * Continues until stopped or buffer is full
+	 * Continues until stopped, buffer is full, or an optional stop generation is reached
 	 */
-	async startComputing(): Promise<void> {
+	async startComputing(options?: { stopAtGeneration?: number }): Promise<void> {
 		if (this.isComputing) return;
 		if (!this.config) throw new Error('Buffer config not set');
 		if (!this.lastGrid) throw new Error('Buffer not initialized');
 
+		const stopAt =
+			typeof options?.stopAtGeneration === 'number' && Number.isFinite(options.stopAtGeneration)
+				? Math.max(0, Math.floor(options.stopAtGeneration))
+				: null;
+
 		this.shouldStop = false;
 		this.isComputing = true;
+		this.stopAtGeneration = stopAt;
 		this.notifyStatusChange();
 
 		try {
-			while (!this.shouldStop && !this.isBufferFull()) {
+			while (!this.shouldStop) {
+				if (this.stopAtGeneration !== null && this.currentGeneration >= this.stopAtGeneration) break;
+				// In normal mode, stop when the buffer is full. In stopAt mode, we keep computing
+				// and drop older frames to keep memory bounded.
+				if (this.stopAtGeneration === null && this.isBufferFull()) break;
 				await this.computeNextFrame();
 			}
 		} finally {
 			this.isComputing = false;
 			this.computingGeneration = null;
 			this.computingProgress = 0;
+			this.stopAtGeneration = null;
 			this.notifyStatusChange();
 		}
 	}
@@ -278,6 +291,11 @@ export class NlcaFrameBuffer {
 			};
 
 			// Update state
+			// If we're running until a stop generation, keep the buffer bounded by dropping old frames.
+			// (Frames are assumed to be persisted externally via onFrameComplete, e.g. to NLCA tape.)
+			if (this.stopAtGeneration !== null && this.targetBufferSize > 0) {
+				while (this.buffer.length >= this.targetBufferSize) this.buffer.shift();
+			}
 			this.buffer.push(frame);
 			this.lastGrid = new Uint32Array(next);
 			this.currentGeneration = generation + 1;
@@ -289,7 +307,7 @@ export class NlcaFrameBuffer {
 			}
 
 			// Notify
-			onFrameComplete?.(frame);
+			await onFrameComplete?.(frame);
 			this.notifyStatusChange();
 
 		} catch (err) {
@@ -355,4 +373,3 @@ export function resetFrameBuffer(): void {
 	globalBuffer?.clear();
 	globalBuffer = null;
 }
-
