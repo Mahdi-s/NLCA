@@ -11,10 +11,14 @@ type NlcaSettingsSnapshot = {
 	neighborhood: NlcaNeighborhood;
 	gridWidth: number;
 	gridHeight: number;
+	parallelChunks: number;
+	chunkSize: number;
+	compressPayload: boolean;
+	deduplicateRequests: boolean;
 };
 
 const STORAGE_KEYS = {
-	apiKey: 'nlca_openrouter_api_key',
+	apiKey: 'nlca_cerebras_api_key',
 	model: 'nlca_model',
 	maxConcurrency: 'nlca_max_concurrency',
 	batchSize: 'nlca_batch_size',
@@ -23,7 +27,11 @@ const STORAGE_KEYS = {
 	memoryWindow: 'nlca_memory_window',
 	neighborhood: 'nlca_neighborhood',
 	gridWidth: 'nlca_grid_width',
-	gridHeight: 'nlca_grid_height'
+	gridHeight: 'nlca_grid_height',
+	parallelChunks: 'nlca_parallel_chunks',
+	chunkSize: 'nlca_chunk_size',
+	compressPayload: 'nlca_compress_payload',
+	deduplicateRequests: 'nlca_deduplicate'
 } as const;
 
 function safeReadStorage(key: string): string | null {
@@ -62,7 +70,7 @@ function parseNeighborhood(value: string | null, fallback: NlcaNeighborhood): Nl
 let initialized = false;
 
 let apiKey = $state('');
-let model = $state('openai/gpt-4o-mini');
+let model = $state('llama3.1-8b');
 let maxConcurrency = $state(50);
 let batchSize = $state(200);
 let frameBatched = $state(true);
@@ -71,18 +79,23 @@ let memoryWindow = $state(3);
 let neighborhood = $state<NlcaNeighborhood>('moore');
 let gridWidth = $state(10);
 let gridHeight = $state(10);
+let parallelChunks = $state(4);
+let chunkSize = $state(0);
+let compressPayload = $state(false);
+let deduplicateRequests = $state(false);
 
 function ensureInitialized() {
 	if (initialized) return;
 	initialized = true;
 
-	const envApiKey = import.meta.env.VITE_NLCA_OPENROUTER_API_KEY ?? '';
-	const envModel = import.meta.env.VITE_NLCA_MODEL ?? 'openai/gpt-4o-mini';
+	const envApiKey = import.meta.env.VITE_NLCA_CEREBRAS_API_KEY ?? '';
+	const envModel = import.meta.env.VITE_NLCA_MODEL ?? 'llama3.1-8b';
 
 	apiKey = envApiKey;
 	model = envModel;
 
-	const storedApiKey = safeReadStorage(STORAGE_KEYS.apiKey);
+	// One-time migration: read old OpenRouter key if new Cerebras key is absent.
+	const storedApiKey = safeReadStorage(STORAGE_KEYS.apiKey) ?? safeReadStorage('nlca_openrouter_api_key');
 	if (typeof storedApiKey === 'string') apiKey = storedApiKey;
 
 	const storedModel = safeReadStorage(STORAGE_KEYS.model);
@@ -96,6 +109,10 @@ function ensureInitialized() {
 	neighborhood = parseNeighborhood(safeReadStorage(STORAGE_KEYS.neighborhood), 'moore');
 	gridWidth = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridWidth) ?? '10'), 8, 512, 10);
 	gridHeight = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridHeight) ?? '10'), 8, 512, 10);
+	parallelChunks = clampInt(Number(safeReadStorage(STORAGE_KEYS.parallelChunks) ?? '4'), 1, 32, 4);
+	chunkSize = clampInt(Number(safeReadStorage(STORAGE_KEYS.chunkSize) ?? '0'), 0, 2000, 0);
+	compressPayload = parseBool(safeReadStorage(STORAGE_KEYS.compressPayload), false);
+	deduplicateRequests = parseBool(safeReadStorage(STORAGE_KEYS.deduplicateRequests), false);
 }
 
 export function getNlcaSettingsState() {
@@ -187,6 +204,38 @@ export function getNlcaSettingsState() {
 			safeWriteStorage(STORAGE_KEYS.gridHeight, String(gridHeight));
 		},
 
+		get parallelChunks() {
+			return parallelChunks;
+		},
+		set parallelChunks(value: number) {
+			parallelChunks = clampInt(value, 1, 32, 4);
+			safeWriteStorage(STORAGE_KEYS.parallelChunks, String(parallelChunks));
+		},
+
+		get chunkSize() {
+			return chunkSize;
+		},
+		set chunkSize(value: number) {
+			chunkSize = clampInt(value, 0, 2000, 0);
+			safeWriteStorage(STORAGE_KEYS.chunkSize, String(chunkSize));
+		},
+
+		get compressPayload() {
+			return compressPayload;
+		},
+		set compressPayload(value: boolean) {
+			compressPayload = !!value;
+			safeWriteStorage(STORAGE_KEYS.compressPayload, compressPayload ? 'true' : 'false');
+		},
+
+		get deduplicateRequests() {
+			return deduplicateRequests;
+		},
+		set deduplicateRequests(value: boolean) {
+			deduplicateRequests = !!value;
+			safeWriteStorage(STORAGE_KEYS.deduplicateRequests, deduplicateRequests ? 'true' : 'false');
+		},
+
 		toJSON(): NlcaSettingsSnapshot {
 			return {
 				apiKey,
@@ -198,7 +247,11 @@ export function getNlcaSettingsState() {
 				memoryWindow,
 				neighborhood,
 				gridWidth,
-				gridHeight
+				gridHeight,
+				parallelChunks,
+				chunkSize,
+				compressPayload,
+				deduplicateRequests
 			};
 		}
 	};

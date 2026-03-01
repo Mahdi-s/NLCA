@@ -1,4 +1,5 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
+import { getCerebrasAgent } from '../_cerebrasAgent.js';
 
 type Role = 'system' | 'user' | 'assistant';
 type Msg = { role: Role; content: string };
@@ -14,13 +15,13 @@ type DecideRequest = {
 	temperature?: number;
 	maxOutputTokens?: number;
 	timeoutMs?: number;
-	/** Max concurrent upstream OpenRouter calls (within this request). */
+	/** Max concurrent upstream Cerebras calls (within this request). */
 	maxConcurrency?: number;
 	/** Cells to decide in this batch. */
 	cells: DecideCell[];
 };
 
-type OpenRouterChatResponse = {
+type CerebrasChatResponse = {
 	id?: string;
 	choices?: Array<{
 		message?: { content?: string };
@@ -57,20 +58,20 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+async function cerebrasChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn('https://api.cerebras.ai/v1/chat/completions', {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
-				'Content-Type': 'application/json',
-				'HTTP-Referer': 'http://localhost',
-				'X-Title': 'games-of-life-nlca'
+				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify(body)
+			body: JSON.stringify(body),
+			// @ts-expect-error undici dispatcher not in standard fetch types
+			dispatcher: getCerebrasAgent()
 		});
 	} finally {
 		clearTimeout(t);
@@ -121,21 +122,30 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			}))
 		};
 
-		// Conservative retries: respect Retry-After on 429, and retry a couple times on transient 5xx.
-		const maxAttempts = 3;
+		// Exponential backoff with full jitter for 429s; binary exponential for 5xx.
+		// delay = min(cap, base * 2^attempt) * random(0.5, 1.0)
+		const BASE_DELAY_MS = 250;
+		const CAP_MS = 30_000;
+		const MAX_ATTEMPTS_429 = 8;
+		const MAX_ATTEMPTS_5XX = 3;
 		let attempt = 0;
 		while (true) {
 			attempt++;
 			try {
-				const res = await openRouterChatOnce(fetch, apiKey, body, timeoutMs);
-				if (res.status === 429 && attempt < maxAttempts) {
+				const res = await cerebrasChatOnce(fetch, apiKey, body, timeoutMs);
+				if (res.status === 429 && attempt < MAX_ATTEMPTS_429) {
 					const retryAfter = parseRetryAfterSeconds(res.headers.get('retry-after'));
-					const waitMs = Math.max(250, Math.round(((retryAfter ?? 1) * 1000) + Math.random() * 250));
-					await sleep(waitMs);
+					const expBackoff = Math.min(CAP_MS, BASE_DELAY_MS * 2 ** attempt);
+					const jittered = Math.round(
+						retryAfter != null
+							? retryAfter * 1000 + Math.random() * 250
+							: expBackoff * (0.5 + Math.random() * 0.5)
+					);
+					await sleep(jittered);
 					continue;
 				}
-				if (res.status >= 500 && attempt < maxAttempts) {
-					const waitMs = Math.round(200 * 2 ** (attempt - 1) + Math.random() * 100);
+				if (res.status >= 500 && attempt < MAX_ATTEMPTS_5XX) {
+					const waitMs = Math.round(Math.min(CAP_MS, BASE_DELAY_MS * 2 ** (attempt - 1)) * (0.5 + Math.random() * 0.5));
 					await sleep(waitMs);
 					continue;
 				}
@@ -145,7 +155,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 					return { cellId, ok: false, status: res.status, error: text || `HTTP ${res.status}`, latencyMs: performance.now() - t0 } as const;
 				}
 
-				const data = (await res.json()) as OpenRouterChatResponse;
+				const data = (await res.json()) as CerebrasChatResponse;
 				const content = data?.choices?.[0]?.message?.content;
 				return {
 					cellId,
@@ -157,8 +167,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 				} as const;
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
-				if (attempt < maxAttempts) {
-					const waitMs = Math.round(200 * 2 ** (attempt - 1) + Math.random() * 100);
+				if (attempt < MAX_ATTEMPTS_5XX) {
+					const waitMs = Math.round(Math.min(CAP_MS, BASE_DELAY_MS * 2 ** (attempt - 1)) * (0.5 + Math.random() * 0.5));
 					await sleep(waitMs);
 					continue;
 				}

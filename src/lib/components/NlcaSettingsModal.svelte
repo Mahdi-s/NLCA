@@ -16,7 +16,7 @@
 	const nlcaSettings = getNlcaSettingsState();
 
 	let apiKey = $state('');
-	let model = $state('openai/gpt-4o-mini');
+	let model = $state('llama3.1-8b');
 	let maxConcurrency = $state(50);
 	let batchSize = $state(200);
 	let frameBatched = $state(true);
@@ -25,6 +25,16 @@
 	let gridWidth = $state(25);
 	let gridHeight = $state(25);
 	let neighborhood = $state<NlcaNeighborhood>('moore');
+	let parallelChunks = $state(4);
+	let chunkSize = $state(0);
+	let compressPayload = $state(false);
+	let deduplicateRequests = $state(false);
+	let showAdvanced = $state(false);
+
+	const CEREBRAS_MODELS = [
+		{ id: 'llama3.1-8b', label: 'Llama 3.1 8B (fast)' },
+		{ id: 'llama-3.3-70b', label: 'Llama 3.3 70B (powerful)' }
+	];
 
 	onMount(() => {
 		apiKey = nlcaSettings.apiKey;
@@ -35,6 +45,10 @@
 		frameStreamed = nlcaSettings.frameStreamed;
 		memoryWindow = nlcaSettings.memoryWindow;
 		neighborhood = nlcaSettings.neighborhood;
+		parallelChunks = nlcaSettings.parallelChunks;
+		chunkSize = nlcaSettings.chunkSize;
+		compressPayload = nlcaSettings.compressPayload;
+		deduplicateRequests = nlcaSettings.deduplicateRequests;
 
 		// Default to 10x10 for NLCA, or current sim dimensions if already set.
 		if (simState.gridWidth === 0 || simState.gridHeight === 0) {
@@ -67,6 +81,10 @@
 		nlcaSettings.neighborhood = neighborhood;
 		nlcaSettings.gridWidth = gridWidth;
 		nlcaSettings.gridHeight = gridHeight;
+		nlcaSettings.parallelChunks = parallelChunks;
+		nlcaSettings.chunkSize = chunkSize;
+		nlcaSettings.compressPayload = compressPayload;
+		nlcaSettings.deduplicateRequests = deduplicateRequests;
 
 		onclose();
 	}
@@ -90,12 +108,16 @@
 
 		<div class="content">
 			<label>
-				<span>OpenRouter API Key</span>
-				<input type="password" bind:value={apiKey} placeholder="sk-or-..." />
+				<span>Cerebras API Key</span>
+				<input type="password" bind:value={apiKey} placeholder="csk-..." />
 			</label>
 			<label>
 				<span>Model</span>
-				<input type="text" bind:value={model} />
+				<select bind:value={model}>
+					{#each CEREBRAS_MODELS as m}
+						<option value={m.id}>{m.label}</option>
+					{/each}
+				</select>
 			</label>
 			<label>
 				<span>Neighborhood</span>
@@ -108,27 +130,27 @@
 			<label>
 				<span>Max Concurrency</span>
 				<input type="number" min="1" max="200" bind:value={maxConcurrency} />
-				<small style="color: var(--ui-text); opacity: 0.7;">Parallel LLM calls (higher = faster but more rate limits)</small>
+				<small>Parallel LLM calls (higher = faster but more rate limits)</small>
 			</label>
 			<label>
 				<span>Batch size (cell-mode)</span>
 				<input type="number" min="1" max="2000" bind:value={batchSize} />
-				<small style="color: var(--ui-text); opacity: 0.7;">Cells per proxy request when frame-batched mode is off</small>
+				<small>Cells per proxy request when frame-batched mode is off</small>
 			</label>
 			<label>
-				<span>Frame-batched mode (one OpenRouter call per frame)</span>
+				<span>Frame-batched mode (one Cerebras call per frame)</span>
 				<input type="checkbox" bind:checked={frameBatched} />
-				<small style="color: var(--ui-text); opacity: 0.7;">Fastest for 30×30; uses structured outputs</small>
+				<small>Fastest for 30×30; uses structured outputs</small>
 			</label>
 			<label>
 				<span>Stream frame updates (SSE)</span>
 				<input type="checkbox" bind:checked={frameStreamed} disabled={!frameBatched} />
-				<small style="color: var(--ui-text); opacity: 0.7;">Progressive updates while waiting (requires frame-batched mode)</small>
+				<small>Progressive updates while waiting (requires frame-batched mode)</small>
 			</label>
 			<label>
 				<span>Memory window (frame-batched)</span>
 				<input type="number" min="0" max="16" bind:value={memoryWindow} />
-				<small style="color: var(--ui-text); opacity: 0.7;">Per-cell history length included in prompts (0 = stateless)</small>
+				<small>Per-cell history length included in prompts (0 = stateless)</small>
 			</label>
 			<div class="row">
 				<label>
@@ -140,6 +162,35 @@
 					<input type="number" min="8" max="512" bind:value={gridHeight} />
 				</label>
 			</div>
+
+			<button class="advanced-toggle" onclick={() => (showAdvanced = !showAdvanced)}>
+				{showAdvanced ? '▾' : '▸'} Advanced / Throughput
+			</button>
+
+			{#if showAdvanced}
+				<div class="advanced-section">
+					<label>
+						<span>Parallel chunks</span>
+						<input type="number" min="1" max="32" bind:value={parallelChunks} />
+						<small>Concurrent frame-chunk requests in flight (frame-batched fallback / large grids)</small>
+					</label>
+					<label>
+						<span>Chunk size (0 = auto)</span>
+						<input type="number" min="0" max="2000" bind:value={chunkSize} />
+						<small>Cells per chunk — auto sizes based on model context window</small>
+					</label>
+					<label class="checkbox-label">
+						<span>Compress payload</span>
+						<input type="checkbox" bind:checked={compressPayload} />
+						<small>Send compact cell tuples instead of verbose JSON (~40% fewer tokens)</small>
+					</label>
+					<label class="checkbox-label">
+						<span>Deduplicate identical contexts</span>
+						<input type="checkbox" bind:checked={deduplicateRequests} />
+						<small>Skip API calls for cells with the same neighborhood — share the result</small>
+					</label>
+				</div>
+			{/if}
 		</div>
 
 		<div class="footer">
@@ -187,10 +238,31 @@
 		padding: 14px 16px;
 		display: grid;
 		gap: 12px;
+		max-height: 70vh;
+		overflow-y: auto;
 	}
 	label {
 		display: grid;
 		gap: 6px;
+	}
+	.checkbox-label {
+		grid-template-columns: 1fr auto;
+		grid-template-rows: auto auto;
+		column-gap: 10px;
+	}
+	.checkbox-label span {
+		grid-column: 1;
+		grid-row: 1;
+	}
+	.checkbox-label input[type='checkbox'] {
+		grid-column: 2;
+		grid-row: 1;
+		width: auto;
+		margin-top: 2px;
+	}
+	.checkbox-label small {
+		grid-column: 1 / -1;
+		grid-row: 2;
 	}
 	.row {
 		display: grid;
@@ -212,6 +284,32 @@
 		background: var(--ui-input-bg);
 		color: var(--ui-text-hover);
 		padding: 10px 12px;
+	}
+	small {
+		color: var(--ui-text);
+		opacity: 0.7;
+		font-size: 0.8em;
+	}
+	.advanced-toggle {
+		background: none;
+		border: none;
+		color: var(--ui-text);
+		cursor: pointer;
+		padding: 4px 0;
+		text-align: left;
+		font-size: 0.9em;
+		opacity: 0.8;
+	}
+	.advanced-toggle:hover {
+		opacity: 1;
+	}
+	.advanced-section {
+		display: grid;
+		gap: 12px;
+		padding: 10px 12px;
+		border: 1px solid var(--ui-border);
+		border-radius: 12px;
+		background: color-mix(in srgb, var(--ui-bg) 80%, transparent);
 	}
 	.footer {
 		display: flex;

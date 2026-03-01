@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { draggable } from '$lib/utils/draggable.js';
 	import { bringToFront, setModalPosition, getModalState } from '$lib/stores/modalManager.svelte.js';
 	import { getSimulationRef, getSimulationState } from '$lib/stores/simulation.svelte.js';
+	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
 	import { NlcaTape, unpackBitsetTo01 } from '$lib/nlca/tape.js';
 	import type { NlcaRunConfig } from '$lib/nlca/types.js';
 
@@ -13,6 +14,7 @@
 	let { onclose }: Props = $props();
 	const modalState = $derived(getModalState('nlcaPlayback'));
 	const simState = getSimulationState();
+	const nlcaSettings = getNlcaSettingsState();
 
 	const tape = new NlcaTape();
 
@@ -26,6 +28,10 @@
 	let playInterval: ReturnType<typeof setInterval> | null = null;
 	let status = $state<string | null>(null);
 	let playbackFps = $state(10); // Playback speed in frames per second
+	let dimensionMismatch = $derived(
+		selectedRun !== null &&
+		(selectedRun.width !== simState.gridWidth || selectedRun.height !== simState.gridHeight)
+	);
 
 	function handleModalClick() {
 		bringToFront('nlcaPlayback');
@@ -46,6 +52,14 @@
 
 	async function loadFrame(gen: number) {
 		if (!selectedRun) return;
+
+		// Guard against dimension mismatch — writing a differently-sized grid into
+		// the current WebGPU buffers causes silent corruption or GPU errors.
+		if (selectedRun.width !== simState.gridWidth || selectedRun.height !== simState.gridHeight) {
+			status = `Canvas is ${simState.gridWidth}×${simState.gridHeight} but this run was recorded at ${selectedRun.width}×${selectedRun.height}. Resize the canvas first.`;
+			return;
+		}
+
 		const sim = getSimulationRef();
 		if (!sim) return;
 
@@ -61,6 +75,25 @@
 		sim.setCellData(grid);
 		simState.generation = gen;
 		simState.aliveCells = sim.countAliveCells();
+	}
+
+	/**
+	 * Resize the canvas to match the selected run's dimensions, then load the
+	 * requested generation. The settings store change triggers a reactive resize
+	 * in Canvas.svelte; we wait one Svelte tick for the DOM/store update to
+	 * propagate before loading the frame.
+	 */
+	async function resizeAndLoad(gen: number) {
+		if (!selectedRun) return;
+		stopTape();
+		// Update the settings store — the $effect in Canvas.svelte will call resize().
+		nlcaSettings.gridWidth = selectedRun.width;
+		nlcaSettings.gridHeight = selectedRun.height;
+		// Wait for Svelte to flush the reactive update and the canvas to resize.
+		await tick();
+		// Give the WebGPU resize one additional async tick to complete.
+		await new Promise<void>((r) => setTimeout(r, 50));
+		await loadFrame(gen);
 	}
 
 	function stopTape() {
@@ -163,13 +196,25 @@
 					{#if isPlayingTape}
 						<button class="btn primary" onclick={stopTape}>Stop</button>
 					{:else}
-						<button class="btn primary" onclick={startTape} disabled={!selectedRunId || latestGen === 0}>Play</button>
+						<button class="btn primary" onclick={startTape} disabled={!selectedRunId || latestGen === 0 || dimensionMismatch}>Play</button>
 					{/if}
 				</div>
 			</div>
 
-			{#if selectedRun}
-				<div class="slider">
+		{#if dimensionMismatch && selectedRun}
+			<div class="mismatch-banner">
+				<span>
+					Canvas is {simState.gridWidth}×{simState.gridHeight} — this run was {selectedRun.width}×{selectedRun.height}.
+					Playing without resizing will corrupt the WebGPU buffers.
+				</span>
+				<button class="btn primary" onclick={() => resizeAndLoad(currentGen || latestGen)}>
+					Resize to {selectedRun.width}×{selectedRun.height} and Load
+				</button>
+			</div>
+		{/if}
+
+		{#if selectedRun}
+			<div class="slider">
 					<div class="meta">
 						<span>Generation: {currentGen} / {latestGen}</span>
 						<div class="step-controls">
@@ -299,6 +344,17 @@
 	.speed-control input[type='range'] { width: 100%; }
 	.muted { color: var(--ui-text); }
 	.status { margin-top: 10px; color: var(--ui-text-hover); }
+	.mismatch-banner {
+		margin-top: 12px;
+		padding: 10px 14px;
+		border-radius: 12px;
+		border: 1px solid color-mix(in srgb, var(--ui-accent) 40%, transparent);
+		background: color-mix(in srgb, var(--ui-accent) 10%, transparent);
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		font-size: 0.875em;
+	}
 </style>
 
 

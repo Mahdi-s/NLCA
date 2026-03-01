@@ -1,4 +1,5 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
+import { getCerebrasAgent } from '../_cerebrasAgent.js';
 
 type CellState01 = 0 | 1;
 
@@ -34,7 +35,7 @@ type DecideFrameRequest = {
 	promptConfig: PromptConfigPayload;
 };
 
-type OpenRouterChatResponse = {
+type CerebrasChatResponse = {
 	id?: string;
 	choices?: Array<{ message?: { content?: unknown } }>;
 	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
@@ -51,20 +52,20 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+async function cerebrasChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn('https://api.cerebras.ai/v1/chat/completions', {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
-				'Content-Type': 'application/json',
-				'HTTP-Referer': 'http://localhost',
-				'X-Title': 'games-of-life-nlca'
+				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify(body)
+			body: JSON.stringify(body),
+			// @ts-expect-error undici dispatcher not in standard fetch types
+			dispatcher: getCerebrasAgent()
 		});
 	} finally {
 		clearTimeout(t);
@@ -306,7 +307,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	while (true) {
 		attempt++;
 		try {
-			const res = await openRouterChatOnce(fetch, apiKey, body, timeoutMs);
+			const res = await cerebrasChatOnce(fetch, apiKey, body, timeoutMs);
 
 			if (res.status === 429 && attempt < maxAttempts) {
 				const retryAfter = parseRetryAfterSeconds(res.headers.get('retry-after'));
@@ -322,10 +323,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 			if (!res.ok) {
 				const text = await res.text().catch(() => '');
-				throw error(res.status, text || `OpenRouter error (${res.status})`);
+				throw error(res.status, text || `Cerebras error (${res.status})`);
 			}
 
-			const data = (await res.json()) as OpenRouterChatResponse;
+			const data = (await res.json()) as CerebrasChatResponse;
 			const content = data?.choices?.[0]?.message?.content;
 			const latencyMs = performance.now() - t0;
 

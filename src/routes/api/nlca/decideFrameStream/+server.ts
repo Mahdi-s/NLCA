@@ -1,4 +1,5 @@
 import { error, type RequestHandler } from '@sveltejs/kit';
+import { getCerebrasAgent } from '../_cerebrasAgent.js';
 
 type CellState01 = 0 | 1;
 
@@ -32,7 +33,7 @@ type DecideFrameRequest = {
 	promptConfig: PromptConfigPayload;
 };
 
-type OpenRouterStreamChunk = {
+type CerebrasStreamChunk = {
 	id?: string;
 	choices?: Array<{
 		delta?: { content?: string; role?: string };
@@ -54,21 +55,21 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatStreamOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+async function cerebrasChatStreamOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn('https://api.cerebras.ai/v1/chat/completions', {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
 				'Content-Type': 'application/json',
-				Accept: 'text/event-stream',
-				'HTTP-Referer': 'http://localhost',
-				'X-Title': 'games-of-life-nlca'
+				Accept: 'text/event-stream'
 			},
-			body: JSON.stringify(body)
+			body: JSON.stringify(body),
+			// @ts-expect-error undici dispatcher not in standard fetch types
+			dispatcher: getCerebrasAgent()
 		});
 	} finally {
 		clearTimeout(t);
@@ -403,7 +404,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	let upstream: Response | null = null;
 	while (true) {
 		attempt++;
-		upstream = await openRouterChatStreamOnce(fetch, apiKey, body, timeoutMs);
+		upstream = await cerebrasChatStreamOnce(fetch, apiKey, body, timeoutMs);
 		if (upstream.status === 429 && attempt < maxAttempts) {
 			const retryAfter = parseRetryAfterSeconds(upstream.headers.get('retry-after'));
 			const waitMs = Math.max(250, Math.round(((retryAfter ?? 1) * 1000) + Math.random() * 250));
@@ -422,8 +423,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 	if (!upstream.ok || !upstream.body) {
 		const text = await upstream.text().catch(() => '');
-		console.log(`[NLCA STREAM] fail frame=${frameId} status=${upstream.status} body=${text.slice(0, 200)}`);
-		throw error(upstream.status, text || `OpenRouter error (${upstream.status})`);
+	console.log(`[NLCA STREAM] fail frame=${frameId} status=${upstream.status} body=${text.slice(0, 200)}`);
+	throw error(upstream.status, text || `Cerebras error (${upstream.status})`);
 	}
 
 	const encoder = new TextEncoder();
@@ -443,7 +444,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			let carry = '';
 			let jsonBuf = '';
 			let st: ExtractorState = { decisionsStarted: false, scanPos: 0 };
-			let usage: OpenRouterStreamChunk['usage'] | null = null;
+			let usage: CerebrasStreamChunk['usage'] | null = null;
 			const seenIds = new Set<number>();
 
 			try {
@@ -478,9 +479,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 									const data = line.slice(5).trimStart();
 									if (!data) continue;
 									if (data === '[DONE]') continue;
-									let chunk: OpenRouterStreamChunk | null = null;
+									let chunk: CerebrasStreamChunk | null = null;
 									try {
-										chunk = JSON.parse(data) as OpenRouterStreamChunk;
+										chunk = JSON.parse(data) as CerebrasStreamChunk;
 									} catch {
 										continue;
 									}
@@ -502,9 +503,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								const data = line.slice(5).trimStart();
 								if (!data) continue;
 								if (data === '[DONE]') continue;
-								let chunk: OpenRouterStreamChunk | null = null;
+								let chunk: CerebrasStreamChunk | null = null;
 								try {
-									chunk = JSON.parse(data) as OpenRouterStreamChunk;
+									chunk = JSON.parse(data) as CerebrasStreamChunk;
 								} catch {
 									continue;
 								}
@@ -587,9 +588,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								// We'll close after loop.
 								continue;
 							}
-							let chunk: OpenRouterStreamChunk | null = null;
+							let chunk: CerebrasStreamChunk | null = null;
 							try {
-								chunk = JSON.parse(data) as OpenRouterStreamChunk;
+								chunk = JSON.parse(data) as CerebrasStreamChunk;
 							} catch {
 								continue;
 							}

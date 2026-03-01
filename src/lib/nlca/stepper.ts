@@ -5,6 +5,7 @@ import { extractCellContext } from './neighborhood.js';
 import { NlcaOrchestrator, type CellDecisionResult, type NlcaCostStats, type DebugLogEntry } from './orchestrator.js';
 import { CellAgentManager } from './agentManager.js';
 import type { PromptConfig } from './prompt.js';
+import type { WorkerBuildContextsMsg, WorkerContextsResultMsg } from './nlca-worker.js';
 
 export interface NlcaStepperConfig {
 	runId: string;
@@ -43,6 +44,94 @@ async function asyncPool<T>(
 	await Promise.all(workers);
 }
 
+/**
+ * Minimum grid cell count to engage the worker pool instead of the synchronous
+ * fallback. Below this threshold the synchronous loop is fast enough (~<5ms)
+ * that worker round-trip overhead would not be worth it.
+ */
+const WORKER_THRESHOLD = 1_000;
+
+/**
+ * Manages a pool of Web Workers for parallelised context building.
+ * Workers are created lazily on first use and reused across steps.
+ * Each worker handles a horizontal shard (range of y-rows) of the grid.
+ */
+class NlcaContextWorkerPool {
+	private workers: Worker[] = [];
+	private pending = new Map<number, (cells: CellContext[]) => void>();
+	private nextId = 0;
+	private workerCount: number;
+
+	constructor() {
+		// Clamp to a reasonable maximum to avoid spawning too many threads.
+		this.workerCount = Math.max(1, Math.min(typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency ?? 4) : 4, 8));
+	}
+
+	private ensureWorkers(): void {
+		if (this.workers.length > 0) return;
+		for (let i = 0; i < this.workerCount; i++) {
+			const w = new Worker(new URL('./nlca-worker.ts', import.meta.url), { type: 'module' });
+			w.onmessage = (e: MessageEvent<WorkerContextsResultMsg>) => {
+				if (e.data.type !== 'contextsResult') return;
+				const resolve = this.pending.get(e.data.id);
+				if (resolve) {
+					this.pending.delete(e.data.id);
+					resolve(e.data.cells);
+				}
+			};
+			this.workers.push(w);
+		}
+	}
+
+	private dispatchShard(
+		workerIndex: number,
+		prev: Uint32Array,
+		width: number,
+		height: number,
+		neighborhood: NlcaNeighborhood,
+		boundary: BoundaryMode,
+		yStart: number,
+		yEnd: number
+	): Promise<CellContext[]> {
+		this.ensureWorkers();
+		return new Promise<CellContext[]>((resolve) => {
+			const id = this.nextId++;
+			this.pending.set(id, resolve);
+			const msg: WorkerBuildContextsMsg = { type: 'buildContexts', id, prev, width, height, neighborhood, boundary, yStart, yEnd };
+			this.workers[workerIndex]!.postMessage(msg);
+		});
+	}
+
+	async buildContexts(
+		prev: Uint32Array,
+		width: number,
+		height: number,
+		neighborhood: NlcaNeighborhood,
+		boundary: BoundaryMode
+	): Promise<CellContext[]> {
+		const n = this.workerCount;
+		const rowsPerShard = Math.ceil(height / n);
+		const shards: Promise<CellContext[]>[] = [];
+
+		for (let i = 0; i < n; i++) {
+			const yStart = i * rowsPerShard;
+			const yEnd = Math.min(height, yStart + rowsPerShard);
+			if (yStart >= height) break;
+			shards.push(this.dispatchShard(i, prev, width, height, neighborhood, boundary, yStart, yEnd));
+		}
+
+		const results = await Promise.all(shards);
+		// Shards are already in row order — concat in order to preserve cell ordering.
+		return ([] as CellContext[]).concat(...results);
+	}
+
+	terminate(): void {
+		for (const w of this.workers) w.terminate();
+		this.workers = [];
+		this.pending.clear();
+	}
+}
+
 export class NlcaStepper {
 	private orchestrator: NlcaOrchestrator;
 	private agentManager: CellAgentManager;
@@ -50,12 +139,28 @@ export class NlcaStepper {
 	private frameHistory: Array<CellState01[]> | null = null;
 	private frameBatchedFrames = 0;
 	private frameBatchedFallbacks = 0;
+	private workerPool: NlcaContextWorkerPool | null = null;
 
 	constructor(cfg: NlcaStepperConfig, agentManager: CellAgentManager) {
 		this.cfg = cfg;
 		this.agentManager = agentManager;
 		this.orchestrator = new NlcaOrchestrator(cfg.orchestrator);
+		// Spawn the worker pool eagerly so workers are warm by the time the first
+		// step is requested. This is a no-op in SSR / non-browser environments.
+		if (typeof Worker !== 'undefined') {
+			try {
+				this.workerPool = new NlcaContextWorkerPool();
+			} catch {
+				// Worker creation can fail in some embeddings (e.g. OPFS origin restrictions).
+			}
+		}
 		console.log(`[NLCA] Stepper initialized - runId: ${cfg.runId}, neighborhood: ${cfg.neighborhood}`);
+	}
+
+	/** Release worker threads. Call when the stepper is being destroyed. */
+	destroy(): void {
+		this.workerPool?.terminate();
+		this.workerPool = null;
 	}
 
 	updateOrchestratorConfig(partial: Partial<NlcaOrchestratorConfig>) {
@@ -141,7 +246,20 @@ export class NlcaStepper {
 		return this.frameHistory;
 	}
 
-	private buildContexts(prev: Uint32Array, width: number, height: number): CellContext[] {
+	private async buildContexts(prev: Uint32Array, width: number, height: number): Promise<CellContext[]> {
+		const totalCells = width * height;
+
+		// For large grids, offload to the worker pool to keep the main thread free.
+		if (totalCells >= WORKER_THRESHOLD && this.workerPool) {
+			try {
+				return await this.workerPool.buildContexts(prev, width, height, this.cfg.neighborhood, this.cfg.boundary);
+			} catch (err) {
+				// Fall through to synchronous path on any worker error.
+				console.warn('[NLCA] Worker context building failed, falling back to sync:', err);
+			}
+		}
+
+		// Synchronous fallback for small grids or when the worker pool is unavailable.
 		const cells: CellContext[] = [];
 		for (let y = 0; y < height; y++) {
 			for (let x = 0; x < width; x++) {
@@ -663,7 +781,7 @@ export class NlcaStepper {
 			this.agentManager.reset(width, height);
 		}
 
-		const contexts = this.buildContexts(prev, width, height);
+		const contexts = await this.buildContexts(prev, width, height);
 
 		const latency8 = new Uint8Array(expected);
 		const changed01 = new Uint8Array(expected);

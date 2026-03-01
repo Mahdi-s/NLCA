@@ -77,6 +77,10 @@
 	let nlcaFrameStreamed = $state(initialNlcaSettings.frameStreamed);
 	let nlcaMemoryWindow = $state(initialNlcaSettings.memoryWindow);
 	let nlcaNeighborhood = $state<NlcaNeighborhood>(initialNlcaSettings.neighborhood);
+	let nlcaParallelChunks = $state(initialNlcaSettings.parallelChunks);
+	let nlcaChunkSize = $state(initialNlcaSettings.chunkSize);
+	let nlcaCompressPayload = $state(initialNlcaSettings.compressPayload);
+	let nlcaDeduplicateRequests = $state(initialNlcaSettings.deduplicateRequests);
 	let nlcaRunId = $state('');
 	let nlcaStepInFlight = $state(false);
 	let nlcaLastError = $state<string | null>(null);
@@ -174,6 +178,10 @@
 		neighborhood: NlcaNeighborhood;
 		gridWidth: number;
 		gridHeight: number;
+		parallelChunks: number;
+		chunkSize: number;
+		compressPayload: boolean;
+		deduplicateRequests: boolean;
 	};
 
 	let lastAppliedNlcaSettings: AppliedNlcaSettings | null = null;
@@ -201,7 +209,11 @@
 			memoryWindow: cfg.memoryWindow,
 			neighborhood: cfg.neighborhood,
 			gridWidth: cfg.gridWidth,
-			gridHeight: cfg.gridHeight
+			gridHeight: cfg.gridHeight,
+			parallelChunks: cfg.parallelChunks,
+			chunkSize: cfg.chunkSize,
+			compressPayload: cfg.compressPayload,
+			deduplicateRequests: cfg.deduplicateRequests
 		};
 
 		const prev = lastAppliedNlcaSettings;
@@ -216,6 +228,10 @@
 		nlcaFrameStreamed = applied.frameStreamed;
 		nlcaMemoryWindow = applied.memoryWindow;
 		nlcaNeighborhood = applied.neighborhood;
+		nlcaParallelChunks = applied.parallelChunks;
+		nlcaChunkSize = applied.chunkSize;
+		nlcaCompressPayload = applied.compressPayload;
+		nlcaDeduplicateRequests = applied.deduplicateRequests;
 
 		// Keep rule neighborhood in sync for display + any neighborhood-based visuals.
 		simState.currentRule.neighborhood = applied.neighborhood;
@@ -233,6 +249,10 @@
 			applied.frameBatched !== prev.frameBatched ||
 			applied.frameStreamed !== prev.frameStreamed ||
 			applied.memoryWindow !== prev.memoryWindow ||
+			applied.parallelChunks !== prev.parallelChunks ||
+			applied.chunkSize !== prev.chunkSize ||
+			applied.compressPayload !== prev.compressPayload ||
+			applied.deduplicateRequests !== prev.deduplicateRequests ||
 			neighborhoodChanging;
 
 		if (neighborhoodChanging) {
@@ -310,7 +330,11 @@
 								frameBatched: nlcaFrameBatched,
 								frameStreamed: nlcaFrameStreamed,
 								memoryWindow: nlcaMemoryWindow,
-								cellTimeoutMs: 30_000
+								cellTimeoutMs: 30_000,
+								parallelChunks: nlcaParallelChunks,
+								chunkSize: nlcaChunkSize > 0 ? nlcaChunkSize : undefined,
+								compressPayload: nlcaCompressPayload,
+								deduplicateRequests: nlcaDeduplicateRequests
 							}
 						},
 						nlcaAgentManager

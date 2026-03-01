@@ -54,6 +54,9 @@ type FrameDecision = { cellId: number; state: 0 | 1; color?: string };
  * These are approximate and may change. When unknown, we use a conservative default.
  */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+	// Cerebras models (primary provider)
+	'llama3.1-8b': 8_192,
+	'llama-3.3-70b': 128_000,
 	// OpenAI models
 	'openai/gpt-4o': 128_000,
 	'openai/gpt-4o-mini': 128_000,
