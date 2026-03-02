@@ -79,10 +79,10 @@ let memoryWindow = $state(3);
 let neighborhood = $state<NlcaNeighborhood>('moore');
 let gridWidth = $state(10);
 let gridHeight = $state(10);
-let parallelChunks = $state(4);
+let parallelChunks = $state(0);
 let chunkSize = $state(0);
-let compressPayload = $state(false);
-let deduplicateRequests = $state(false);
+let compressPayload = $state(true);
+let deduplicateRequests = $state(true);
 
 function ensureInitialized() {
 	if (initialized) return;
@@ -109,10 +109,10 @@ function ensureInitialized() {
 	neighborhood = parseNeighborhood(safeReadStorage(STORAGE_KEYS.neighborhood), 'moore');
 	gridWidth = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridWidth) ?? '10'), 8, 512, 10);
 	gridHeight = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridHeight) ?? '10'), 8, 512, 10);
-	parallelChunks = clampInt(Number(safeReadStorage(STORAGE_KEYS.parallelChunks) ?? '4'), 1, 32, 4);
+	parallelChunks = clampInt(Number(safeReadStorage(STORAGE_KEYS.parallelChunks) ?? '0'), 0, 32, 0);
 	chunkSize = clampInt(Number(safeReadStorage(STORAGE_KEYS.chunkSize) ?? '0'), 0, 2000, 0);
-	compressPayload = parseBool(safeReadStorage(STORAGE_KEYS.compressPayload), false);
-	deduplicateRequests = parseBool(safeReadStorage(STORAGE_KEYS.deduplicateRequests), false);
+	compressPayload = parseBool(safeReadStorage(STORAGE_KEYS.compressPayload), true);
+	deduplicateRequests = parseBool(safeReadStorage(STORAGE_KEYS.deduplicateRequests), true);
 }
 
 export function getNlcaSettingsState() {
@@ -208,7 +208,7 @@ export function getNlcaSettingsState() {
 			return parallelChunks;
 		},
 		set parallelChunks(value: number) {
-			parallelChunks = clampInt(value, 1, 32, 4);
+			parallelChunks = clampInt(value, 0, 32, 0);
 			safeWriteStorage(STORAGE_KEYS.parallelChunks, String(parallelChunks));
 		},
 

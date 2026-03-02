@@ -1,5 +1,5 @@
 import { error, type RequestHandler } from '@sveltejs/kit';
-import { getCerebrasAgent } from '../_cerebrasAgent.js';
+import { getCerebrasStreamAgent } from '../_cerebrasAgent.js';
 
 type CellState01 = 0 | 1;
 
@@ -69,7 +69,7 @@ async function cerebrasChatStreamOnce(fetchFn: typeof fetch, apiKey: string, bod
 			},
 			body: JSON.stringify(body),
 			// @ts-expect-error undici dispatcher not in standard fetch types
-			dispatcher: getCerebrasAgent()
+			dispatcher: getCerebrasStreamAgent()
 		});
 	} finally {
 		clearTimeout(t);
