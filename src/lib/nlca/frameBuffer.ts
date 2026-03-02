@@ -265,13 +265,19 @@ export class NlcaFrameBuffer {
 				}
 			};
 
+			// Consume any speculative contexts pre-built during the previous generation's
+			// streaming pass. If the grid matches closely enough, context building is skipped.
+			const speculativePromise = stepper.consumeSpeculative(generation);
+			const prebuilt = speculativePromise ? await speculativePromise : undefined;
+
 			const { next, metrics, colorsHex, colorStatus8 } = await stepper.step(
 				this.lastGrid,
 				width,
 				height,
 				generation,
 				callbacks,
-				promptConfig
+				promptConfig,
+				prebuilt
 			);
 
 			const computeTimeMs = performance.now() - startTime;

@@ -192,6 +192,10 @@ export class NlcaStepper {
 	private frameBatchedFrames = 0;
 	private frameBatchedFallbacks = 0;
 	private workerPool: NlcaContextWorkerPool | null = null;
+	private pendingSpeculative: {
+		promise: Promise<{ contexts: CellContext[]; gridSnapshot: Uint32Array }>;
+		generation: number;
+	} | null = null;
 
 	constructor(cfg: NlcaStepperConfig, agentManager: CellAgentManager) {
 		this.cfg = cfg;
@@ -321,6 +325,37 @@ export class NlcaStepper {
 			}
 		}
 		return cells;
+	}
+
+	/**
+	 * Pre-build contexts for the next generation using a snapshot taken during
+	 * the current streaming pass (~80% through). Overlaps CPU context-building
+	 * with the tail of the LLM inference stream.
+	 */
+	private async speculativeBuildContexts(
+		partialGrid: Uint32Array,
+		width: number,
+		height: number
+	): Promise<{ contexts: CellContext[]; gridSnapshot: Uint32Array }> {
+		const gridSnapshot = partialGrid.slice();
+		const contexts = await this.buildContexts(gridSnapshot, width, height);
+		return { contexts, gridSnapshot };
+	}
+
+	/**
+	 * Consume the pending speculative context result if it matches the given generation.
+	 * Returns and clears the promise, or null if no match or nothing pending.
+	 */
+	consumeSpeculative(
+		generation: number
+	): Promise<{ contexts: CellContext[]; gridSnapshot: Uint32Array }> | null {
+		if (!this.pendingSpeculative || this.pendingSpeculative.generation !== generation) {
+			this.pendingSpeculative = null;
+			return null;
+		}
+		const p = this.pendingSpeculative.promise;
+		this.pendingSpeculative = null;
+		return p;
 	}
 
 	private async decideFrameBatched(
@@ -458,44 +493,53 @@ export class NlcaStepper {
 							if (!Number.isFinite(cellId) || cellId < 0 || cellId >= totalCells) continue;
 							const state: CellState01 = stateNum === 1 ? 1 : 0;
 
-							workingGrid[cellId] = state;
-							decisions.set(cellId, state);
-							completed++;
+						workingGrid[cellId] = state;
+						decisions.set(cellId, state);
+						completed++;
 
-							const latencyMs = performance.now() - t0;
-							latency8[cellId] = latencyToU8(latencyMs);
+						// Kick off speculative context building for the next generation at 80% progress.
+						if (!this.pendingSpeculative && completed >= totalCells * 0.8) {
+							this.pendingSpeculative = {
+								promise: this.speculativeBuildContexts(workingGrid, width, height),
+								generation: generation + 1
+							};
+							console.debug(`[NLCA] Speculative context building started at ${Math.round(completed / totalCells * 100)}%`);
+						}
 
-							let colorHex: string | undefined;
-							let colorStatus: any;
-							if (wantColor && colorsHex && colorStatus8) {
-								const c = typeof payload.color === 'string' ? String(payload.color).trim().toUpperCase() : '';
-								if (c && /^#[0-9A-F]{6}$/.test(c)) {
-									colorHex = c;
-									colorStatus = 'valid';
-									colorsHex[cellId] = c;
-									colorStatus8[cellId] = 1;
-								} else {
-									colorStatus = 'missing';
-									colorStatus8[cellId] = 0;
-								}
+						const latencyMs = performance.now() - t0;
+						latency8[cellId] = latencyToU8(latencyMs);
+
+						let colorHex: string | undefined;
+						let colorStatus: any;
+						if (wantColor && colorsHex && colorStatus8) {
+							const c = typeof payload.color === 'string' ? String(payload.color).trim().toUpperCase() : '';
+							if (c && /^#[0-9A-F]{6}$/.test(c)) {
+								colorHex = c;
+								colorStatus = 'valid';
+								colorsHex[cellId] = c;
+								colorStatus8[cellId] = 1;
+							} else {
+								colorStatus = 'missing';
+								colorStatus8[cellId] = 0;
 							}
+						}
 
-							callbacks?.onCellComplete?.(
-								cellId,
-								{ state, colorHex, colorStatus, latencyMs, raw: dataStr, success: true },
-								completed,
-								totalCells
-							);
+						callbacks?.onCellComplete?.(
+							cellId,
+							{ state, colorHex, colorStatus, latencyMs, raw: dataStr, success: true },
+							completed,
+							totalCells
+						);
 
-							const now = performance.now();
-							const shouldFlush =
-								completed - lastUiFlushCompleted >= uiFlushEveryN || now - lastUiFlushAt >= uiFlushIntervalMs || completed === totalCells;
-							if (shouldFlush) {
-								lastUiFlushAt = now;
-								lastUiFlushCompleted = completed;
-								callbacks?.onBatchProgress?.(completed, totalCells, workingGrid);
-							}
-						} else if (eventName === 'progress') {
+						const now = performance.now();
+						const shouldFlush =
+							completed - lastUiFlushCompleted >= uiFlushEveryN || now - lastUiFlushAt >= uiFlushIntervalMs || completed === totalCells;
+						if (shouldFlush) {
+							lastUiFlushAt = now;
+							lastUiFlushCompleted = completed;
+							callbacks?.onBatchProgress?.(completed, totalCells, workingGrid);
+						}
+					} else if (eventName === 'progress') {
 							// Server-side progress, still update HUD counter
 							const c = Number(payload.completed ?? NaN);
 							if (Number.isFinite(c)) callbacks?.onBatchProgress?.(Math.max(completed, c), totalCells, workingGrid);
@@ -844,37 +888,46 @@ export class NlcaStepper {
 						if (!Number.isFinite(cellId) || cellId < 0 || cellId >= width * height) continue;
 						const state: CellState01 = stateNum === 1 ? 1 : 0;
 
-						workingGrid[cellId] = state;
-						decisions.set(cellId, state);
-						completedCells++;
+					workingGrid[cellId] = state;
+					decisions.set(cellId, state);
+					completedCells++;
 
-						const latencyMs = performance.now() - t0;
-						latency8[cellId] = latencyToU8(latencyMs);
+					// Kick off speculative context building for the next generation at 80% progress.
+					if (!this.pendingSpeculative && completedCells >= totalCells * 0.8) {
+						this.pendingSpeculative = {
+							promise: this.speculativeBuildContexts(workingGrid, width, height),
+							generation: generation + 1
+						};
+						console.debug(`[NLCA] Speculative context building started at ${Math.round(completedCells / totalCells * 100)}%`);
+					}
 
-						let colorHex: string | undefined;
-						let colorStatus: any;
-						if (wantColor && colorsHex && colorStatus8) {
-							const c = typeof payload.color === 'string' ? String(payload.color).trim().toUpperCase() : '';
-							if (c && /^#[0-9A-F]{6}$/.test(c)) {
-								colorHex = c;
-								colorStatus = 'valid';
-								colorsHex[cellId] = c;
-								colorStatus8[cellId] = 1;
-							} else {
-								colorStatus = 'missing';
-								colorStatus8[cellId] = 0;
-							}
+					const latencyMs = performance.now() - t0;
+					latency8[cellId] = latencyToU8(latencyMs);
+
+					let colorHex: string | undefined;
+					let colorStatus: any;
+					if (wantColor && colorsHex && colorStatus8) {
+						const c = typeof payload.color === 'string' ? String(payload.color).trim().toUpperCase() : '';
+						if (c && /^#[0-9A-F]{6}$/.test(c)) {
+							colorHex = c;
+							colorStatus = 'valid';
+							colorsHex[cellId] = c;
+							colorStatus8[cellId] = 1;
+						} else {
+							colorStatus = 'missing';
+							colorStatus8[cellId] = 0;
 						}
+					}
 
-						callbacks?.onCellComplete?.(
-							cellId,
-							{ state, colorHex, colorStatus, latencyMs, raw: dataStr, success: true },
-							completedCells,
-							totalCells
-						);
+					callbacks?.onCellComplete?.(
+						cellId,
+						{ state, colorHex, colorStatus, latencyMs, raw: dataStr, success: true },
+						completedCells,
+						totalCells
+					);
 
-						// Throttled UI flush (shared across all concurrent streams)
-						const now = performance.now();
+					// Throttled UI flush (shared across all concurrent streams)
+					const now = performance.now();
 						const shouldFlush =
 							completedCells - lastUiFlushCompleted >= uiFlushEveryN ||
 							now - lastUiFlushAt >= uiFlushIntervalMs ||
@@ -1040,7 +1093,8 @@ export class NlcaStepper {
 		height: number,
 		generation: number,
 		callbacks?: NlcaProgressCallback,
-		promptConfig?: PromptConfig
+		promptConfig?: PromptConfig,
+		prebuiltContexts?: { contexts: CellContext[]; gridSnapshot: Uint32Array }
 	): Promise<NlcaStepResult> {
 		const expected = width * height;
 		if (prev.length !== expected) {
@@ -1053,7 +1107,25 @@ export class NlcaStepper {
 			this.agentManager.reset(width, height);
 		}
 
-		const contexts = await this.buildContexts(prev, width, height);
+		let contexts: CellContext[];
+		if (prebuiltContexts) {
+			// Count how many cells differ between the speculative snapshot and actual prev grid.
+			let mismatch = 0;
+			const snapshotLen = Math.min(prev.length, prebuiltContexts.gridSnapshot.length);
+			for (let i = 0; i < snapshotLen; i++) {
+				if (prev[i] !== prebuiltContexts.gridSnapshot[i]) mismatch++;
+			}
+			const rate = mismatch / prev.length;
+			if (rate < 0.05) {
+				contexts = prebuiltContexts.contexts;
+				console.debug(`[NLCA] Speculative contexts reused (${(rate * 100).toFixed(1)}% mismatch)`);
+			} else {
+				contexts = await this.buildContexts(prev, width, height);
+				console.debug(`[NLCA] Speculative contexts discarded (${(rate * 100).toFixed(1)}% mismatch), rebuilding`);
+			}
+		} else {
+			contexts = await this.buildContexts(prev, width, height);
+		}
 
 		const latency8 = new Uint8Array(expected);
 		const changed01 = new Uint8Array(expected);
