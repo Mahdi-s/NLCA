@@ -52,6 +52,53 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
+/** Extract and parse JSON from content that may be markdown-wrapped or have trailing text. */
+function parseDecisionsContent(content: unknown): { decisions?: unknown[] } | null {
+	if (content == null) return null;
+	let str: string;
+	if (typeof content === 'string') {
+		str = content.trim();
+	} else if (typeof content === 'object' && content !== null) {
+		return content as { decisions?: unknown[] };
+	} else {
+		return null;
+	}
+	// Strip markdown code blocks (```json ... ``` or ``` ... ```)
+	const codeBlockMatch = str.match(/^```(?:json)?\s*([\s\S]*?)```/);
+	if (codeBlockMatch) str = codeBlockMatch[1]!.trim();
+	// Find JSON object: start at first {, end at matching }
+	let start = str.indexOf('{');
+	if (start < 0) return null;
+	let depth = 0;
+	let inString = false;
+	let escape = false;
+	let end = -1;
+	for (let i = start; i < str.length; i++) {
+		const ch = str[i]!;
+		if (inString) {
+			if (escape) escape = false;
+			else if (ch === '\\') escape = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === '{') depth++;
+		else if (ch === '}') {
+			depth--;
+			if (depth === 0) {
+				end = i + 1;
+				break;
+			}
+		}
+	}
+	if (end < 0) return null;
+	try {
+		return JSON.parse(str.slice(start, end)) as { decisions?: unknown[] };
+	} catch {
+		return null;
+	}
+}
+
 async function cerebrasChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
@@ -211,9 +258,7 @@ function buildJsonSchema(cellCount: number, wantColor: boolean) {
 	const colorProp = wantColor
 		? {
 				color: {
-					type: 'string',
-					pattern: '^#[0-9A-F]{6}$',
-					description: 'Uppercase hex color for this cell'
+					type: 'string'
 				}
 			}
 		: {};
@@ -328,14 +373,21 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			const content = data?.choices?.[0]?.message?.content;
 			const latencyMs = performance.now() - t0;
 
-			// Structured outputs often returns parsed JSON; but some providers still return string.
-			const parsed = typeof content === 'string' ? JSON.parse(content) : content;
-			const decisions = (parsed as { decisions?: unknown }).decisions;
-			if (!Array.isArray(decisions) || decisions.length !== cells.length) {
+			const parsed = parseDecisionsContent(content);
+			const decisions = parsed?.decisions;
+			if (!Array.isArray(decisions) || decisions.length === 0) {
+				const preview = typeof content === 'string' ? content.slice(0, 120) : JSON.stringify(content).slice(0, 120);
+				console.warn(
+					`[NLCA decideFrame] Invalid decisions: decisions=${Array.isArray(decisions) ? decisions.length : 'not-array'}, ` +
+						`expected=${cells.length}, contentPreview=${preview}${typeof content === 'string' && content.length > 120 ? '...' : ''}`
+				);
 				throw error(502, 'Model returned invalid decisions array');
 			}
-			
-			// Validate that every requested cellId appears exactly once.
+			if (decisions.length < cells.length) {
+				console.warn(`[NLCA decideFrame] Partial response: got ${decisions.length}/${cells.length} decisions`);
+			}
+
+			// Validate that every returned cellId is in our request and appears at most once.
 			const expectedIds = new Set<number>();
 			for (const c of cells) {
 				const id = Number((c as { cellId?: unknown }).cellId ?? NaN);
@@ -353,7 +405,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 				if (seen.has(cellId)) throw error(502, 'Model returned duplicate cellId');
 				seen.add(cellId);
 			}
-			if (seen.size !== expectedIds.size) throw error(502, 'Model returned incomplete decisions');
 
 			return json({
 				id: data?.id ?? null,

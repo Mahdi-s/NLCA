@@ -675,6 +675,9 @@ export class NlcaStepper {
 			chunkSize = this.orchestrator.calculateChunkSize(wantColor, neighborhoodSize);
 		}
 		chunkSize = Math.max(1, chunkSize);
+		// Cap chunk size for reliability: smaller requests reduce Cerebras truncation
+		const RELIABILITY_CHUNK_CAP = 25;
+		chunkSize = Math.min(chunkSize, RELIABILITY_CHUNK_CAP);
 
 		// Resolve parallelism: 0 means auto
 		const parallelChunks = cfgParallel > 0

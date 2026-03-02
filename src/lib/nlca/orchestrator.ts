@@ -57,6 +57,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 	// Cerebras models (primary provider)
 	'llama3.1-8b': 8_192,
 	'llama-3.3-70b': 128_000,
+	'gpt-oss-120b': 128_000,
+	'zai-glm-4.7': 128_000,
+	'qwen-3-235b-a22b-instruct-2507': 128_000,
 	// OpenAI models
 	'openai/gpt-4o': 128_000,
 	'openai/gpt-4o-mini': 128_000,

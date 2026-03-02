@@ -213,8 +213,7 @@ function buildJsonSchema(cellCount: number, wantColor: boolean) {
 	const colorProp = wantColor
 		? {
 				color: {
-					type: 'string',
-					pattern: '^#[0-9A-F]{6}$'
+					type: 'string'
 				}
 			}
 		: {};

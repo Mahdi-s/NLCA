@@ -31,15 +31,28 @@
 	let compressPayload = $state(true);
 	let deduplicateRequests = $state(true);
 	let showAdvanced = $state(false);
+	let customModelId = $state('');
 
 	const CEREBRAS_MODELS = [
 		{ id: 'llama3.1-8b', label: 'Llama 3.1 8B (fast)' },
-		{ id: 'llama-3.3-70b', label: 'Llama 3.3 70B (powerful)' }
+		{ id: 'llama-3.3-70b', label: 'Llama 3.3 70B (powerful)' },
+		{ id: 'gpt-oss-120b', label: 'OpenAI GPT OSS 120B (reasoning)' },
+		{ id: 'zai-glm-4.7', label: 'Z.ai GLM 4.7 (coding)' },
+		{ id: 'qwen-3-235b-a22b-instruct-2507', label: 'Qwen 3 235B Instruct' },
+		{ id: 'custom', label: 'Custom (enter model ID)' }
 	];
+	const KNOWN_MODEL_IDS = new Set(CEREBRAS_MODELS.filter((m) => m.id !== 'custom').map((m) => m.id));
 
 	onMount(() => {
 		apiKey = nlcaSettings.apiKey;
-		model = nlcaSettings.model;
+		const storedModel = nlcaSettings.model;
+		if (KNOWN_MODEL_IDS.has(storedModel)) {
+			model = storedModel;
+			customModelId = '';
+		} else {
+			model = 'custom';
+			customModelId = storedModel || '';
+		}
 		maxConcurrency = nlcaSettings.maxConcurrency;
 		batchSize = nlcaSettings.batchSize;
 		frameBatched = nlcaSettings.frameBatched;
@@ -73,7 +86,13 @@
 	}
 	function save() {
 		nlcaSettings.apiKey = apiKey;
-		nlcaSettings.model = model;
+		const effectiveModel =
+			model === 'custom' && typeof customModelId === 'string' && customModelId.trim()
+				? customModelId.trim()
+				: model === 'custom'
+					? 'llama3.1-8b'
+					: model;
+		nlcaSettings.model = effectiveModel;
 		nlcaSettings.maxConcurrency = maxConcurrency;
 		nlcaSettings.batchSize = batchSize;
 		nlcaSettings.frameBatched = frameBatched;
@@ -128,6 +147,14 @@
 						<option value={m.id}>{m.label}</option>
 					{/each}
 				</select>
+				{#if model === 'custom'}
+					<input
+						type="text"
+						bind:value={customModelId}
+						placeholder="e.g. llama3.1-8b"
+						class="custom-model-input"
+					/>
+				{/if}
 			</label>
 			<label>
 				<span>Neighborhood</span>
@@ -294,6 +321,10 @@
 		background: var(--ui-input-bg);
 		color: var(--ui-text-hover);
 		padding: 10px 12px;
+	}
+	.custom-model-input {
+		margin-top: 8px;
+		width: 100%;
 	}
 	small {
 		color: var(--ui-text);
