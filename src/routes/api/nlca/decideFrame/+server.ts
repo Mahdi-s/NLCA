@@ -226,8 +226,6 @@ function buildJsonSchema(cellCount: number, wantColor: boolean) {
 		properties: {
 			decisions: {
 				type: 'array',
-				minItems: cellCount,
-				maxItems: cellCount,
 				items: {
 					type: 'object',
 					additionalProperties: false,

@@ -227,8 +227,6 @@ function buildJsonSchema(cellCount: number, wantColor: boolean) {
 		properties: {
 			decisions: {
 				type: 'array',
-				minItems: cellCount,
-				maxItems: cellCount,
 				items: {
 					type: 'object',
 					additionalProperties: false,
@@ -377,8 +375,6 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		temperature,
 		max_tokens: maxOutputTokens,
 		stream: true,
-		// OpenAI-style: include usage at end if supported by provider.
-		streamOptions: { includeUsage: true },
 		messages,
 		response_format: {
 			type: 'json_schema',
