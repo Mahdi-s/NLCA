@@ -152,6 +152,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 				if (!res.ok) {
 					const text = await res.text().catch(() => '');
+					console.error(`[NLCA/decide] Cerebras ${res.status} for cell ${cellId}: ${text.slice(0, 200)}`);
 					return { cellId, ok: false, status: res.status, error: text || `HTTP ${res.status}`, latencyMs: performance.now() - t0 } as const;
 				}
 

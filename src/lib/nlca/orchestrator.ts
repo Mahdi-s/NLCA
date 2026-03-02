@@ -419,6 +419,7 @@ export class NlcaOrchestrator {
 		let proxyResults: ProxyResult[] = [];
 		let proxyError: string | null = null;
 		const t0 = performance.now();
+		const batchCellIds = items.map(({ agent }) => agent.cellId);
 
 		try {
 			const res = await fetch(`${base}/api/nlca/decide`, {
@@ -454,10 +455,25 @@ export class NlcaOrchestrator {
 			}
 		} catch (e) {
 			proxyError = e instanceof Error ? e.message : String(e);
+			console.error(`[NLCA] Proxy request failed for cells [${batchCellIds.slice(0, 5).join(',')}${batchCellIds.length > 5 ? '...' : ''}]: ${proxyError}`);
 		}
 
 		const byId = new Map<number, ProxyResult>();
 		for (const r of proxyResults) byId.set(r.cellId, r);
+
+		// Log the first API-level error in this batch so the root cause is visible.
+		if (!proxyError) {
+			const firstError = proxyResults.find((r) => !r.ok);
+			if (firstError) {
+				const errMsg = firstError.error ?? `HTTP ${firstError.status ?? '?'}`;
+				const statusHint =
+					firstError.status === 401 ? ' — check your Cerebras API key in NLCA Settings'
+					: firstError.status === 400 ? ' — bad request (check model name or missing API key)'
+					: firstError.status === 429 ? ' — rate limited'
+					: '';
+				console.error(`[NLCA] Cerebras returned ${firstError.status ?? 'error'} for cell ${firstError.cellId}: ${errMsg}${statusHint}`);
+			}
+		}
 
 		for (const { agent, req } of items) {
 			const r = byId.get(agent.cellId);
@@ -501,6 +517,7 @@ export class NlcaOrchestrator {
 			} else {
 				const errText = r?.error ? String(r.error) : r?.status ? `HTTP ${r.status}` : 'Unknown error';
 				raw = typeof r?.content === 'string' && r.content ? r.content : `ERROR: ${errText}`;
+				// Per-cell error is already logged at the batch level above; avoid 100 duplicate lines.
 			}
 
 			agent.addMessage({ role: 'assistant', content: raw || `{\"state\":${state}}` });
