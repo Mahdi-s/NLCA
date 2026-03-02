@@ -157,6 +157,24 @@ export function calculateOptimalChunkSize(
 }
 
 /**
+ * Calculate optimal parallelism level based on grid size and chunk size.
+ * When the user sets parallelChunks to 0 (auto), this determines
+ * how many concurrent requests to dispatch.
+ */
+export function calculateOptimalParallelism(
+	totalCells: number,
+	chunkSize: number,
+	maxParallel: number = 16
+): number {
+	const totalChunks = Math.ceil(totalCells / Math.max(1, chunkSize));
+	// No point in more parallelism than chunks
+	if (totalCells < 200) return Math.min(2, totalChunks);
+	if (totalCells < 1000) return Math.min(4, totalChunks);
+	if (totalCells < 5000) return Math.min(8, totalChunks);
+	return Math.min(maxParallel, totalChunks);
+}
+
+/**
  * Hash a cell's decision context for deduplication.
  * The hash includes: self state, neighbor states, and history (if any).
  * Position (x, y) is intentionally excluded since cells with identical

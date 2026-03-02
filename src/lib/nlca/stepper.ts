@@ -2,10 +2,11 @@ import type { BoundaryMode } from '$lib/stores/simulation.svelte.js';
 import { base } from '$app/paths';
 import type { CellContext, NlcaCellMetricsFrame, NlcaCellRequest, NlcaOrchestratorConfig, NlcaStepResult, NlcaNeighborhood, CellState01 } from './types.js';
 import { extractCellContext } from './neighborhood.js';
-import { NlcaOrchestrator, type CellDecisionResult, type NlcaCostStats, type DebugLogEntry } from './orchestrator.js';
+import { NlcaOrchestrator, calculateOptimalParallelism, type CellDecisionResult, type NlcaCostStats, type DebugLogEntry } from './orchestrator.js';
 import { CellAgentManager } from './agentManager.js';
 import type { PromptConfig } from './prompt.js';
-import type { WorkerBuildContextsMsg, WorkerContextsResultMsg } from './nlca-worker.js';
+import type { WorkerBuildContextsMsg, WorkerContextsResultMsg, WorkerInitSharedGridMsg } from './nlca-worker.js';
+import { SharedGridBuffer } from './sharedGrid.js';
 
 export interface NlcaStepperConfig {
 	runId: string;
@@ -58,9 +59,10 @@ const WORKER_THRESHOLD = 1_000;
  */
 class NlcaContextWorkerPool {
 	private workers: Worker[] = [];
-	private pending = new Map<number, (cells: CellContext[]) => void>();
+	private pending = new Map<number, (result: { cells: CellContext[]; hashes?: string[] }) => void>();
 	private nextId = 0;
 	private workerCount: number;
+	private sharedGrid: SharedGridBuffer | null = null;
 
 	constructor() {
 		// Clamp to a reasonable maximum to avoid spawning too many threads.
@@ -76,11 +78,36 @@ class NlcaContextWorkerPool {
 				const resolve = this.pending.get(e.data.id);
 				if (resolve) {
 					this.pending.delete(e.data.id);
-					resolve(e.data.cells);
+					resolve({ cells: e.data.cells, hashes: e.data.hashes });
 				}
 			};
 			this.workers.push(w);
 		}
+	}
+
+	/**
+	 * Initialise SharedArrayBuffer-backed grid for zero-copy worker communication.
+	 * Idempotent — only allocates if dimensions change or SAB is not yet set up.
+	 */
+	initSharedGrid(width: number, height: number): void {
+		if (!SharedGridBuffer.isAvailable()) return;
+		// Already initialised for these dimensions.
+		if (this.sharedGrid && this.sharedGrid.width === width && this.sharedGrid.height === height) return;
+
+		this.sharedGrid = new SharedGridBuffer(width, height);
+		this.ensureWorkers();
+
+		const initMsg: WorkerInitSharedGridMsg = {
+			type: 'initSharedGrid',
+			buffer: this.sharedGrid.buffer,
+			width,
+			height,
+			dataOffset: SharedGridBuffer.DATA_OFFSET
+		};
+		for (const w of this.workers) {
+			w.postMessage(initMsg);
+		}
+		console.log(`[NLCA] Worker pool using SharedArrayBuffer (${width}x${height})`);
 	}
 
 	private dispatchShard(
@@ -91,13 +118,26 @@ class NlcaContextWorkerPool {
 		neighborhood: NlcaNeighborhood,
 		boundary: BoundaryMode,
 		yStart: number,
-		yEnd: number
-	): Promise<CellContext[]> {
+		yEnd: number,
+		useSharedGrid: boolean = false,
+		computeHashes: boolean = false
+	): Promise<{ cells: CellContext[]; hashes?: string[] }> {
 		this.ensureWorkers();
-		return new Promise<CellContext[]>((resolve) => {
+		return new Promise<{ cells: CellContext[]; hashes?: string[] }>((resolve) => {
 			const id = this.nextId++;
 			this.pending.set(id, resolve);
-			const msg: WorkerBuildContextsMsg = { type: 'buildContexts', id, prev, width, height, neighborhood, boundary, yStart, yEnd };
+			const msg: WorkerBuildContextsMsg = {
+				type: 'buildContexts',
+				id,
+				prev: useSharedGrid ? new Uint32Array(0) : prev,
+				width,
+				height,
+				neighborhood,
+				boundary,
+				yStart,
+				yEnd,
+				computeHashes
+			};
 			this.workers[workerIndex]!.postMessage(msg);
 		});
 	}
@@ -113,11 +153,22 @@ class NlcaContextWorkerPool {
 		const rowsPerShard = Math.ceil(height / n);
 		const shards: Promise<CellContext[]>[] = [];
 
+		// When SharedArrayBuffer is active and dimensions match, write once
+		// and dispatch shards with empty prev to avoid structured clone overhead.
+		const useShared =
+			this.sharedGrid !== null &&
+			this.sharedGrid.width === width &&
+			this.sharedGrid.height === height;
+
+		if (useShared) {
+			this.sharedGrid!.writeGrid(prev, 0);
+		}
+
 		for (let i = 0; i < n; i++) {
 			const yStart = i * rowsPerShard;
 			const yEnd = Math.min(height, yStart + rowsPerShard);
 			if (yStart >= height) break;
-			shards.push(this.dispatchShard(i, prev, width, height, neighborhood, boundary, yStart, yEnd));
+			shards.push(this.dispatchShard(i, prev, width, height, neighborhood, boundary, yStart, yEnd, useShared));
 		}
 
 		const results = await Promise.all(shards);
@@ -129,6 +180,7 @@ class NlcaContextWorkerPool {
 		for (const w of this.workers) w.terminate();
 		this.workers = [];
 		this.pending.clear();
+		this.sharedGrid = null;
 	}
 }
 
@@ -252,6 +304,8 @@ export class NlcaStepper {
 		// For large grids, offload to the worker pool to keep the main thread free.
 		if (totalCells >= WORKER_THRESHOLD && this.workerPool) {
 			try {
+				// Initialise SharedArrayBuffer for zero-copy communication (idempotent).
+				this.workerPool.initSharedGrid(width, height);
 				return await this.workerPool.buildContexts(prev, width, height, this.cfg.neighborhood, this.cfg.boundary);
 			} catch (err) {
 				// Fall through to synchronous path on any worker error.
@@ -310,7 +364,21 @@ export class NlcaStepper {
 		callbacks?.onBatchProgress?.(0, totalCells, workingGrid);
 
 		// Attempt streaming (if enabled), otherwise single-call-per-frame; then fallback chunking.
+		// When parallelChunks > 1 and the grid is large enough, use parallel multi-stream dispatch
+		// for dramatically improved throughput (N concurrent Cerebras inference passes).
+		const cfgParallel = this.cfg.orchestrator.parallelChunks ?? 0;
+		const resolvedParallel = cfgParallel > 0 ? cfgParallel : calculateOptimalParallelism(totalCells, 300);
+		const useParallelStreams = this.cfg.orchestrator.frameStreamed && resolvedParallel > 1 && totalCells > 200;
+
 		try {
+			if (useParallelStreams) {
+				// ── Parallel multi-stream dispatch ──────────────────────────
+				await this.decideFrameParallelStreams(
+					cells, width, height, generation, latency8, workingGrid,
+					decisions, colorsHex, colorStatus8, wantColor,
+					makePayloadCells, callbacks, promptConfig
+				);
+			} else {
 			const payloadCells = makePayloadCells(cells);
 
 			if (this.cfg.orchestrator.frameStreamed) {
@@ -482,15 +550,12 @@ export class NlcaStepper {
 				}
 				callbacks?.onBatchProgress?.(totalCells, totalCells, workingGrid);
 			}
+			} // end else (single-stream / non-streaming path)
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			if (this.cfg.orchestrator.frameStreamed) {
-				// Hard-fail streamed frame-batched runs so provider incompatibilities are obvious.
-				// (No silent “success” and no automatic fallback to chunking.)
-				console.warn(`[NLCA] Frame-batched streamed call failed (no fallback): ${msg}`);
-				throw e;
-			}
 
+			// Fall back to parallel non-streaming chunks on any failure.
+			// This replaces the old hard-fail for streaming: parallel chunking preserves throughput.
 			this.frameBatchedFallbacks++;
 			console.warn(`[NLCA] Frame-batched call failed, falling back to parallel chunking: ${msg}`);
 
@@ -553,8 +618,8 @@ export class NlcaStepper {
 		promptConfig?: PromptConfig
 	): Promise<void> {
 		const totalCells = cells.length;
-		const parallelChunks = Math.max(1, this.cfg.orchestrator.parallelChunks ?? 4);
-		
+		const cfgParallel = this.cfg.orchestrator.parallelChunks ?? 0;
+
 		// Calculate chunk size: use adaptive sizing if enabled, otherwise use configured or default
 		let chunkSize: number;
 		if (this.cfg.orchestrator.chunkSize && this.cfg.orchestrator.chunkSize > 0) {
@@ -567,6 +632,11 @@ export class NlcaStepper {
 		}
 		chunkSize = Math.max(1, chunkSize);
 
+		// Resolve parallelism: 0 means auto
+		const parallelChunks = cfgParallel > 0
+			? cfgParallel
+			: calculateOptimalParallelism(totalCells, chunkSize);
+
 		// Split cells into chunks
 		const chunks: CellContext[][] = [];
 		for (let start = 0; start < cells.length; start += chunkSize) {
@@ -575,7 +645,7 @@ export class NlcaStepper {
 
 		console.log(
 			`[NLCA] Parallel chunking: ${chunks.length} chunks of ~${chunkSize} cells, ` +
-				`parallelism: ${parallelChunks}`
+				`parallelism: ${parallelChunks}${cfgParallel === 0 ? ' (auto)' : ''}`
 		);
 
 		let completedCells = 0;
@@ -625,6 +695,208 @@ export class NlcaStepper {
 				await processChunk(chunk);
 			} catch (err) {
 				console.error(`[NLCA] Chunk ${idx} failed:`, err);
+			}
+		});
+
+		// Final progress update
+		callbacks?.onBatchProgress?.(totalCells, totalCells, workingGrid);
+	}
+
+	/**
+	 * Dispatch frame decisions using parallel SSE streams for maximum throughput.
+	 * Each chunk gets its own concurrent streaming request to the Cerebras API,
+	 * allowing N inference passes to run simultaneously and merge results as they arrive.
+	 */
+	private async decideFrameParallelStreams(
+		cells: readonly CellContext[],
+		width: number,
+		height: number,
+		generation: number,
+		latency8: Uint8Array,
+		workingGrid: Uint32Array,
+		decisions: Map<number, CellState01>,
+		colorsHex: Array<string | null> | undefined,
+		colorStatus8: Uint8Array | undefined,
+		wantColor: boolean,
+		makePayloadCells: (subset: readonly CellContext[]) => Array<{
+			cellId: number;
+			x: number;
+			y: number;
+			self: CellState01;
+			neighbors: Array<[number, number, CellState01]>;
+			history?: CellState01[];
+		}>,
+		callbacks?: NlcaProgressCallback,
+		promptConfig?: PromptConfig
+	): Promise<void> {
+		const totalCells = cells.length;
+
+		// Resolve parallelism: 0 means auto
+		const cfgParallel = this.cfg.orchestrator.parallelChunks ?? 0;
+
+		// Calculate chunk size
+		let chunkSize: number;
+		if (this.cfg.orchestrator.chunkSize && this.cfg.orchestrator.chunkSize > 0) {
+			chunkSize = this.cfg.orchestrator.chunkSize;
+		} else {
+			const neighborhoodSize = this.getNeighborhoodSize();
+			chunkSize = this.orchestrator.calculateChunkSize(wantColor, neighborhoodSize);
+		}
+		chunkSize = Math.max(1, chunkSize);
+
+		const parallelChunks = cfgParallel > 0
+			? cfgParallel
+			: calculateOptimalParallelism(totalCells, chunkSize);
+
+		// Split cells into chunks
+		const chunks: CellContext[][] = [];
+		for (let start = 0; start < cells.length; start += chunkSize) {
+			chunks.push(cells.slice(start, Math.min(cells.length, start + chunkSize)) as CellContext[]);
+		}
+
+		console.log(
+			`[NLCA] Parallel streams: ${chunks.length} chunks of ~${chunkSize} cells, ` +
+				`parallelism: ${parallelChunks}${cfgParallel === 0 ? ' (auto)' : ''}`
+		);
+
+		// Shared progress tracking (safe: JS single-threaded event loop)
+		let completedCells = 0;
+		const t0 = performance.now();
+		let lastUiFlushAt = t0;
+		const uiFlushIntervalMs = 100;
+		const uiFlushEveryN = 50;
+		let lastUiFlushCompleted = 0;
+
+		callbacks?.onBatchProgress?.(0, totalCells, workingGrid);
+
+		// Process a single chunk via SSE stream
+		const processChunkStream = async (chunk: CellContext[], chunkIdx: number): Promise<void> => {
+			const payloadCells = makePayloadCells(chunk);
+			const decoder = new TextDecoder();
+
+			const res = await fetch(`${base}/api/nlca/decideFrameStream`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+				body: JSON.stringify({
+					apiKey: this.cfg.orchestrator.apiKey,
+					model: this.cfg.orchestrator.model.model,
+					temperature: this.cfg.orchestrator.model.temperature,
+					timeoutMs: this.cfg.orchestrator.cellTimeoutMs,
+					maxOutputTokens: Math.max(8192, this.cfg.orchestrator.model.maxOutputTokens),
+					width,
+					height,
+					generation,
+					cells: payloadCells.map((c) => ({
+						cellId: c.cellId,
+						x: c.x,
+						y: c.y,
+						self: c.self,
+						neighborhood: c.neighbors,
+						history: c.history
+					})),
+					promptConfig: {
+						...(promptConfig ?? { taskDescription: '', useAdvancedMode: false }),
+						compressPayload: this.cfg.orchestrator.compressPayload === true
+					}
+				})
+			});
+
+			if (!res.ok || !res.body) {
+				const text = await res.text().catch(() => '');
+				throw new Error(text || `decideFrameStream chunk ${chunkIdx} failed (${res.status})`);
+			}
+
+			// Read SSE stream — same parsing logic as the single-stream code path
+			const reader = res.body.getReader();
+			let carry = '';
+
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				if (!value) continue;
+				carry += decoder.decode(value, { stream: true });
+
+				while (true) {
+					const sep = carry.indexOf('\n\n');
+					if (sep < 0) break;
+					const block = carry.slice(0, sep);
+					carry = carry.slice(sep + 2);
+
+					let eventName = 'message';
+					const dataLines: string[] = [];
+					for (const ln of block.split('\n')) {
+						if (ln.startsWith('event:')) eventName = ln.slice(6).trim();
+						else if (ln.startsWith('data:')) dataLines.push(ln.slice(5).trimStart());
+					}
+					const dataStr = dataLines.join('\n');
+					if (!dataStr) continue;
+
+					let payload: any;
+					try {
+						payload = JSON.parse(dataStr);
+					} catch {
+						continue;
+					}
+
+					if (eventName === 'decision') {
+						const cellId = Number(payload.cellId);
+						const stateNum = Number(payload.state);
+						if (!Number.isFinite(cellId) || cellId < 0 || cellId >= width * height) continue;
+						const state: CellState01 = stateNum === 1 ? 1 : 0;
+
+						workingGrid[cellId] = state;
+						decisions.set(cellId, state);
+						completedCells++;
+
+						const latencyMs = performance.now() - t0;
+						latency8[cellId] = latencyToU8(latencyMs);
+
+						let colorHex: string | undefined;
+						let colorStatus: any;
+						if (wantColor && colorsHex && colorStatus8) {
+							const c = typeof payload.color === 'string' ? String(payload.color).trim().toUpperCase() : '';
+							if (c && /^#[0-9A-F]{6}$/.test(c)) {
+								colorHex = c;
+								colorStatus = 'valid';
+								colorsHex[cellId] = c;
+								colorStatus8[cellId] = 1;
+							} else {
+								colorStatus = 'missing';
+								colorStatus8[cellId] = 0;
+							}
+						}
+
+						callbacks?.onCellComplete?.(
+							cellId,
+							{ state, colorHex, colorStatus, latencyMs, raw: dataStr, success: true },
+							completedCells,
+							totalCells
+						);
+
+						// Throttled UI flush (shared across all concurrent streams)
+						const now = performance.now();
+						const shouldFlush =
+							completedCells - lastUiFlushCompleted >= uiFlushEveryN ||
+							now - lastUiFlushAt >= uiFlushIntervalMs ||
+							completedCells === totalCells;
+						if (shouldFlush) {
+							lastUiFlushAt = now;
+							lastUiFlushCompleted = completedCells;
+							callbacks?.onBatchProgress?.(completedCells, totalCells, workingGrid);
+						}
+					} else if (eventName === 'error') {
+						throw new Error(String(payload.message ?? `stream error (chunk ${chunkIdx})`));
+					}
+				}
+			}
+		};
+
+		// Dispatch all chunks via bounded parallelism
+		await asyncPool(parallelChunks, chunks, async (chunk, idx) => {
+			try {
+				await processChunkStream(chunk, idx);
+			} catch (err) {
+				console.error(`[NLCA] Stream chunk ${idx} failed:`, err);
 			}
 		});
 

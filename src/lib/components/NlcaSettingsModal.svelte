@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
 	import { draggable } from '$lib/utils/draggable.js';
 	import { bringToFront, setModalPosition, getModalState } from '$lib/stores/modalManager.svelte.js';
 	import { getSimulationState } from '$lib/stores/simulation.svelte.js';
@@ -25,10 +26,10 @@
 	let gridWidth = $state(25);
 	let gridHeight = $state(25);
 	let neighborhood = $state<NlcaNeighborhood>('moore');
-	let parallelChunks = $state(4);
+	let parallelChunks = $state(0);
 	let chunkSize = $state(0);
-	let compressPayload = $state(false);
-	let deduplicateRequests = $state(false);
+	let compressPayload = $state(true);
+	let deduplicateRequests = $state(true);
 	let showAdvanced = $state(false);
 
 	const CEREBRAS_MODELS = [
@@ -85,6 +86,15 @@
 		nlcaSettings.chunkSize = chunkSize;
 		nlcaSettings.compressPayload = compressPayload;
 		nlcaSettings.deduplicateRequests = deduplicateRequests;
+
+		// Warm up the Cerebras connection pool when an API key is present.
+		if (apiKey && apiKey.startsWith('csk-')) {
+			fetch(`${base}/api/nlca/warmup`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ apiKey })
+			}).catch(() => {}); // fire and forget
+		}
 
 		onclose();
 	}
@@ -171,8 +181,8 @@
 				<div class="advanced-section">
 					<label>
 						<span>Parallel chunks</span>
-						<input type="number" min="1" max="32" bind:value={parallelChunks} />
-						<small>Concurrent frame-chunk requests in flight (frame-batched fallback / large grids)</small>
+						<input type="number" min="0" max="32" bind:value={parallelChunks} />
+						<small>Concurrent requests (0 = auto-scale based on grid size)</small>
 					</label>
 					<label>
 						<span>Chunk size (0 = auto)</span>

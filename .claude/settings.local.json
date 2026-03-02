@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"latency\\\\|tokens\\\\|metrics\\\\|performance\" /Users/mahdi/repos/games-of-life/.claude/worktrees/awesome-thompson/src/lib/components/*.svelte --include=\"*.svelte\")",
+      "Bash(wc -l /Users/mahdi/repos/games-of-life/.claude/worktrees/awesome-thompson/src/routes/api/nlca/*.ts /Users/mahdi/repos/games-of-life/.claude/worktrees/awesome-thompson/src/lib/nlca/*.ts)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx svelte-check --tsconfig ./tsconfig.json)",
+      "Bash(npx vite build)",
+      "Bash(npx tsc --noEmit --pretty)"
+    ]
+  }
+}
