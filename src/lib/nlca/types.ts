@@ -124,4 +124,51 @@ export interface NlcaStepResult {
 	colorStatus8?: Uint8Array;
 }
 
+/** Complete configuration snapshot for a single experiment */
+export interface ExperimentConfig {
+	// Model & Provider
+	apiKey: string;
+	model: string;
+	temperature: number;
+	maxOutputTokens: number;
 
+	// Simulation Parameters
+	gridWidth: number;
+	gridHeight: number;
+	neighborhood: NlcaNeighborhood;
+	cellColorEnabled: boolean;
+
+	// Prompt & Task
+	taskDescription: string;
+	promptPresetId?: string;
+	useAdvancedMode: boolean;
+	advancedTemplate?: string;
+
+	// LLM / Technical Parameters
+	memoryWindow: number;
+	maxConcurrency: number;
+	batchSize: number;
+	frameBatched: boolean;
+	frameStreamed: boolean;
+	cellTimeoutMs: number;
+	compressPayload: boolean;
+	deduplicateRequests: boolean;
+
+	// Run Configuration
+	targetFrames: number;
+}
+
+export type ExperimentStatus = 'running' | 'paused' | 'completed' | 'error';
+
+/** Lightweight metadata stored in the master index DB */
+export interface ExperimentMeta {
+	id: string;
+	label: string;
+	dbFilename: string;
+	config: ExperimentConfig;
+	status: ExperimentStatus;
+	createdAt: number;
+	updatedAt: number;
+	frameCount: number;
+	errorMessage?: string;
+}
