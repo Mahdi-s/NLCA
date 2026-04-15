@@ -12,10 +12,8 @@
 	import NlcaPlaybackModal from '$lib/components/NlcaPlaybackModal.svelte';
 	import NlcaPromptModal from '$lib/components/NlcaPromptModal.svelte';
 	import NlcaBatchRunModal from '$lib/components/NlcaBatchRunModal.svelte';
-	import NlcaExperimentTabs from './NlcaExperimentTabs.svelte';
-	import NlcaNewExperimentModal from './NlcaNewExperimentModal.svelte';
+	import NlcaExperimentPanel from './NlcaExperimentPanel.svelte';
 	import { ExperimentManager } from '$lib/nlca/experimentManager.svelte.js';
-	import type { ExperimentConfig } from '$lib/nlca/types.js';
 
 	import { getSimulationState, getUIState, type GridScale } from '$lib/stores/simulation.svelte.js';
 	import { getModalStates, toggleModal, closeModal } from '$lib/stores/modalManager.svelte.js';
@@ -41,29 +39,12 @@
 
 	// Experiment Manager
 	const experimentManager = new ExperimentManager();
-	let showNewExperimentModal = $state(false);
+	let showExperimentPanel = $state(false);
 
 	// Load experiments from index on mount
 	$effect(() => {
 		experimentManager.loadFromIndex();
 	});
-
-	function handleLaunchExperiment(config: ExperimentConfig) {
-		experimentManager.createExperiment(config);
-		showNewExperimentModal = false;
-	}
-
-	function handlePauseExperiment(id: string) {
-		experimentManager.pauseExperiment(id);
-	}
-
-	function handleResumeExperiment(id: string) {
-		experimentManager.resumeExperiment(id);
-	}
-
-	function handleDeleteExperiment(id: string) {
-		experimentManager.deleteExperiment(id);
-	}
 
 	let canvas: Canvas;
 
@@ -170,6 +151,9 @@
 			case 'KeyG':
 				simState.showGrid = !simState.showGrid;
 				break;
+			case 'KeyE':
+				showExperimentPanel = !showExperimentPanel;
+				break;
 			case 'KeyI':
 				toggleModal('initialize');
 				break;
@@ -186,7 +170,7 @@
 				closeModal('nlcaPlayback');
 				closeModal('nlcaPrompt');
 				closeModal('nlcaBatchRun');
-				showNewExperimentModal = false;
+				showExperimentPanel = false;
 				uiState.closeAll();
 				break;
 			case 'Slash':
@@ -211,16 +195,6 @@
 </svelte:head>
 
 <svelte:window onkeydown={handleKeydown} />
-
-<NlcaExperimentTabs
-	experiments={experimentManager.experimentList}
-	activeId={experimentManager.activeId}
-	onselect={(id) => experimentManager.setActive(id)}
-	onnew={() => showNewExperimentModal = true}
-	onpause={handlePauseExperiment}
-	onresume={handleResumeExperiment}
-	ondelete={handleDeleteExperiment}
-/>
 
 <main
 	class="app"
@@ -252,6 +226,8 @@
 		experimentStatus={experimentManager.active?.status}
 		onexperimentpause={() => experimentManager.active && experimentManager.pauseExperiment(experimentManager.active.id)}
 		onexperimentresume={() => experimentManager.active && experimentManager.resumeExperiment(experimentManager.active.id)}
+		onexperiments={() => showExperimentPanel = !showExperimentPanel}
+		showExperimentPanel={showExperimentPanel}
 	/>
 
 	{#if showHelp}
@@ -286,13 +262,6 @@
 		<NlcaPromptModal onclose={() => closeModal('nlcaPrompt')} />
 	{/if}
 
-	{#if showNewExperimentModal}
-		<NlcaNewExperimentModal
-			onlaunch={handleLaunchExperiment}
-			onclose={() => showNewExperimentModal = false}
-		/>
-	{/if}
-
 	{#if showNlcaBatchRun}
 		<NlcaBatchRunModal 
 			onclose={() => closeModal('nlcaBatchRun')}
@@ -305,6 +274,12 @@
 			estimateTime={handleEstimateTime}
 		/>
 	{/if}
+
+	<NlcaExperimentPanel
+		manager={experimentManager}
+		open={showExperimentPanel}
+		onclose={() => showExperimentPanel = false}
+	/>
 </main>
 
 <style>
