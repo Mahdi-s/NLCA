@@ -67,6 +67,14 @@
 
 	let canvas: Canvas;
 
+	// Push active experiment's grid to Canvas whenever it changes
+	$effect(() => {
+		const active = experimentManager.active;
+		if (active?.currentGrid && canvas) {
+			canvas.setExperimentGrid(active.currentGrid, active.config.gridWidth, active.config.gridHeight);
+		}
+	});
+
 	function handleClear() {
 		canvas.clear();
 	}

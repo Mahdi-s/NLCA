@@ -1903,6 +1903,18 @@
 		return simulation;
 	}
 
+	/**
+	 * Push an external experiment grid into the Canvas for rendering.
+	 * Resizes the simulation if dimensions differ.
+	 */
+	export function setExperimentGrid(grid: Uint32Array, width: number, height: number) {
+		if (!simulation || !ctx) return;
+		if (simState.gridWidth !== width || simState.gridHeight !== height) {
+			resize(width, height);
+		}
+		simulation.setCellData(grid);
+	}
+
 	function isMobileShareEnvironment() {
 		if (typeof navigator === 'undefined') return false;
 		const ua = navigator.userAgent || '';
