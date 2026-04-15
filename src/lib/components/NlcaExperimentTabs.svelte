@@ -36,11 +36,15 @@
 
 <div class="experiment-tabs">
 	{#each experiments as exp (exp.id)}
-		<button
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
 			class="tab"
 			class:active={exp.id === activeId}
 			onclick={() => onselect(exp.id)}
+			onkeydown={() => {}}
 			title={`${exp.label}\n${exp.config.model}\n${exp.progress.current}/${exp.progress.target} frames`}
+			role="tab"
+			tabindex="0"
 		>
 			<span class="status-icon" style="color: {statusColor(exp.status)}">{statusIcon(exp.status)}</span>
 			<span class="tab-label">{exp.label}</span>
@@ -53,7 +57,7 @@
 				{/if}
 				<button class="tab-action delete" onclick={(e) => { e.stopPropagation(); ondelete(exp.id); }} title="Delete">×</button>
 			</div>
-		</button>
+		</div>
 	{/each}
 	<button class="tab new-tab" onclick={onnew} title="New Experiment">
 		+ New

@@ -182,7 +182,7 @@ export class ExperimentManager {
 			{
 				runId: id,
 				neighborhood: exp.config.neighborhood,
-				boundary: 'wrap',
+				boundary: 'torus',
 				orchestrator: orchestratorConfig
 			},
 			agentManager
