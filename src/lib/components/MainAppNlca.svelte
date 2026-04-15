@@ -12,6 +12,10 @@
 	import NlcaPlaybackModal from '$lib/components/NlcaPlaybackModal.svelte';
 	import NlcaPromptModal from '$lib/components/NlcaPromptModal.svelte';
 	import NlcaBatchRunModal from '$lib/components/NlcaBatchRunModal.svelte';
+	import NlcaExperimentTabs from './NlcaExperimentTabs.svelte';
+	import NlcaNewExperimentModal from './NlcaNewExperimentModal.svelte';
+	import { ExperimentManager } from '$lib/nlca/experimentManager.svelte.js';
+	import type { ExperimentConfig } from '$lib/nlca/types.js';
 
 	import { getSimulationState, getUIState, type GridScale } from '$lib/stores/simulation.svelte.js';
 	import { getModalStates, toggleModal, closeModal } from '$lib/stores/modalManager.svelte.js';
@@ -34,6 +38,32 @@
 	let nlcaBufferStatus = $state<BufferStatus | null>(null);
 	let nlcaBatchRunTarget = $state(0);
 	let nlcaBatchRunCompleted = $state(0);
+
+	// Experiment Manager
+	const experimentManager = new ExperimentManager();
+	let showNewExperimentModal = $state(false);
+
+	// Load experiments from index on mount
+	$effect(() => {
+		experimentManager.loadFromIndex();
+	});
+
+	function handleLaunchExperiment(config: ExperimentConfig) {
+		experimentManager.createExperiment(config);
+		showNewExperimentModal = false;
+	}
+
+	function handlePauseExperiment(id: string) {
+		experimentManager.pauseExperiment(id);
+	}
+
+	function handleResumeExperiment(id: string) {
+		experimentManager.resumeExperiment(id);
+	}
+
+	function handleDeleteExperiment(id: string) {
+		experimentManager.deleteExperiment(id);
+	}
 
 	let canvas: Canvas;
 
@@ -148,6 +178,7 @@
 				closeModal('nlcaPlayback');
 				closeModal('nlcaPrompt');
 				closeModal('nlcaBatchRun');
+				showNewExperimentModal = false;
 				uiState.closeAll();
 				break;
 			case 'Slash':
@@ -177,6 +208,16 @@
 	class="app" 
 	class:light-theme={simState.isLightTheme}
 >
+	<NlcaExperimentTabs
+		experiments={experimentManager.experimentList}
+		activeId={experimentManager.activeId}
+		onselect={(id) => experimentManager.setActive(id)}
+		onnew={() => showNewExperimentModal = true}
+		onpause={handlePauseExperiment}
+		onresume={handleResumeExperiment}
+		ondelete={handleDeleteExperiment}
+	/>
+
 	<Canvas bind:this={canvas} nlcaMode={true} />
 
 	<ClickHint />
@@ -231,6 +272,13 @@
 
 	{#if showNlcaPrompt}
 		<NlcaPromptModal onclose={() => closeModal('nlcaPrompt')} />
+	{/if}
+
+	{#if showNewExperimentModal}
+		<NlcaNewExperimentModal
+			onlaunch={handleLaunchExperiment}
+			onclose={() => showNewExperimentModal = false}
+		/>
 	{/if}
 
 	{#if showNlcaBatchRun}
