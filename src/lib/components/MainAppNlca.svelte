@@ -212,20 +212,20 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<main 
-	class="app" 
+<NlcaExperimentTabs
+	experiments={experimentManager.experimentList}
+	activeId={experimentManager.activeId}
+	onselect={(id) => experimentManager.setActive(id)}
+	onnew={() => showNewExperimentModal = true}
+	onpause={handlePauseExperiment}
+	onresume={handleResumeExperiment}
+	ondelete={handleDeleteExperiment}
+/>
+
+<main
+	class="app"
 	class:light-theme={simState.isLightTheme}
 >
-	<NlcaExperimentTabs
-		experiments={experimentManager.experimentList}
-		activeId={experimentManager.activeId}
-		onselect={(id) => experimentManager.setActive(id)}
-		onnew={() => showNewExperimentModal = true}
-		onpause={handlePauseExperiment}
-		onresume={handleResumeExperiment}
-		ondelete={handleDeleteExperiment}
-	/>
-
 	<Canvas bind:this={canvas} nlcaMode={true} />
 
 	<ClickHint />
