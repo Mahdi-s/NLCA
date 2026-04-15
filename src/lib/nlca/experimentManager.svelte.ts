@@ -75,7 +75,7 @@ function buildPromptConfig(config: ExperimentConfig): PromptConfig {
 }
 
 export class ExperimentManager {
-	experiments = $state<Map<string, Experiment>>(new Map());
+	experiments = $state<Record<string, Experiment>>({});
 	activeId = $state<string | null>(null);
 	private experimentCounter = 0;
 	private index: ExperimentIndex;
@@ -87,18 +87,18 @@ export class ExperimentManager {
 
 	get active(): Experiment | null {
 		if (!this.activeId) return null;
-		return this.experiments.get(this.activeId) ?? null;
+		return this.experiments[this.activeId] ?? null;
 	}
 
 	get experimentList(): Experiment[] {
-		return Array.from(this.experiments.values());
+		return Object.values(this.experiments);
 	}
 
 	async loadFromIndex(): Promise<void> {
 		await this.index.init();
 		const metas = await this.index.list();
 		for (const meta of metas) {
-			if (this.experiments.has(meta.id)) continue;
+			if (meta.id in this.experiments) continue;
 			const tape = new NlcaTape(meta.dbFilename);
 			await tape.init();
 			const exp: Experiment = {
@@ -118,7 +118,7 @@ export class ExperimentManager {
 				currentGeneration: 0,
 				bufferStatus: null
 			};
-			this.experiments.set(meta.id, exp);
+			this.experiments[meta.id] = exp;
 			this.experimentCounter++;
 		}
 	}
@@ -149,7 +149,7 @@ export class ExperimentManager {
 			bufferStatus: null
 		};
 
-		this.experiments.set(id, exp);
+		this.experiments[id] = exp;
 		this.activeId = id;
 
 		await this.index.init();
@@ -172,7 +172,7 @@ export class ExperimentManager {
 	}
 
 	async startExperiment(id: string): Promise<void> {
-		const exp = this.experiments.get(id);
+		const exp = this.experiments[id];
 		if (!exp) throw new Error(`Experiment ${id} not found`);
 
 		const orchestratorConfig = buildOrchestratorConfig(exp.config);
@@ -221,7 +221,7 @@ export class ExperimentManager {
 		this.computeAbortControllers.set(id, controller);
 
 		const loop = async () => {
-			const exp = this.experiments.get(id);
+			const exp = this.experiments[id];
 			if (!exp || !exp.stepper || !exp.currentGrid) return;
 
 			while (!controller.signal.aborted && exp.status === 'running' && exp.progress.current < exp.progress.target) {
@@ -258,7 +258,11 @@ export class ExperimentManager {
 				} catch (err) {
 					if (controller.signal.aborted) break;
 					exp.status = 'error';
-					exp.errorMessage = err instanceof Error ? err.message : String(err);
+					let msg = err instanceof Error ? err.message : String(err);
+					// Try to extract JSON error from HTML responses
+					const jsonMatch = msg.match(/"message":"([^"]+)"/);
+					if (jsonMatch) msg = jsonMatch[1];
+					exp.errorMessage = msg.slice(0, 200);
 					await this.index.updateStatus(id, 'error', exp.progress.current, exp.errorMessage);
 					console.error(`[ExperimentManager] Experiment ${id} error:`, err);
 					return;
@@ -275,7 +279,7 @@ export class ExperimentManager {
 	}
 
 	async pauseExperiment(id: string): Promise<void> {
-		const exp = this.experiments.get(id);
+		const exp = this.experiments[id];
 		if (!exp || exp.status !== 'running') return;
 
 		const controller = this.computeAbortControllers.get(id);
@@ -289,7 +293,7 @@ export class ExperimentManager {
 	}
 
 	async resumeExperiment(id: string): Promise<void> {
-		const exp = this.experiments.get(id);
+		const exp = this.experiments[id];
 		if (!exp || exp.status !== 'paused') return;
 
 		if (!exp.stepper) {
@@ -308,23 +312,23 @@ export class ExperimentManager {
 			this.computeAbortControllers.delete(id);
 		}
 
-		this.experiments.delete(id);
+		delete this.experiments[id];
 		await this.index.delete(id);
 
 		if (this.activeId === id) {
-			const remaining = Array.from(this.experiments.keys());
+			const remaining = Object.keys(this.experiments);
 			this.activeId = remaining.length > 0 ? remaining[0] : null;
 		}
 	}
 
 	setActive(id: string): void {
-		if (this.experiments.has(id)) {
+		if (id in this.experiments) {
 			this.activeId = id;
 		}
 	}
 
 	async seekToGeneration(id: string, generation: number): Promise<void> {
-		const exp = this.experiments.get(id);
+		const exp = this.experiments[id];
 		if (!exp) return;
 
 		const frame = await exp.tape.getFrame(id, generation);

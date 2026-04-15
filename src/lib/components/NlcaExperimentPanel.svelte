@@ -47,7 +47,9 @@
 
 	function handleLaunch() {
 		if (!nlcaSettings.apiKey) return;
-		manager.createExperiment(configFromCurrentSettings());
+		manager.createExperiment(configFromCurrentSettings()).catch(err => {
+			console.error('[ExperimentPanel] Failed to create experiment:', err);
+		});
 	}
 
 	function statusIcon(status: Experiment['status']): string {
