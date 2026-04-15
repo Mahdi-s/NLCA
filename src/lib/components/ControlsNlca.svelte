@@ -21,6 +21,10 @@
 		showInitialize?: boolean;
 		showAbout?: boolean;
 		collapsed?: boolean;
+		experimentActive?: boolean;
+		experimentStatus?: 'running' | 'paused' | 'completed' | 'error';
+		onexperimentpause?: () => void;
+		onexperimentresume?: () => void;
 	}
 
 	let {
@@ -39,7 +43,11 @@
 		showHelp = false,
 		showInitialize = false,
 		showAbout = false,
-		collapsed = $bindable(false)
+		collapsed = $bindable(false),
+		experimentActive = false,
+		experimentStatus,
+		onexperimentpause,
+		onexperimentresume
 	}: Props = $props();
 
 	const simState = getSimulationState();
@@ -144,18 +152,33 @@
 
 <div class="controls" class:collapsed>
 	<div class="button-group" id="tour-playback-group">
-		<button class="control-btn primary" onclick={() => simState.togglePlay()} data-tooltip={simState.isPlaying ? 'Pause (Enter)' : 'Play (Enter)'}>
-			{#if simState.isPlaying}
-				<svg viewBox="0 0 24 24" fill="currentColor">
-					<rect x="6" y="4" width="4" height="16" rx="1" />
-					<rect x="14" y="4" width="4" height="16" rx="1" />
-				</svg>
-			{:else}
-				<svg viewBox="0 0 24 24" fill="currentColor">
-					<path d="M8 5.14v14l11-7-11-7z" />
-				</svg>
-			{/if}
-		</button>
+		{#if experimentActive}
+			<button class="control-btn primary" onclick={() => experimentStatus === 'running' ? onexperimentpause?.() : onexperimentresume?.()} data-tooltip={experimentStatus === 'running' ? 'Pause Experiment' : 'Resume Experiment'}>
+				{#if experimentStatus === 'running'}
+					<svg viewBox="0 0 24 24" fill="currentColor">
+						<rect x="6" y="4" width="4" height="16" rx="1" />
+						<rect x="14" y="4" width="4" height="16" rx="1" />
+					</svg>
+				{:else}
+					<svg viewBox="0 0 24 24" fill="currentColor">
+						<path d="M8 5.14v14l11-7-11-7z" />
+					</svg>
+				{/if}
+			</button>
+		{:else}
+			<button class="control-btn primary" onclick={() => simState.togglePlay()} data-tooltip={simState.isPlaying ? 'Pause (Enter)' : 'Play (Enter)'}>
+				{#if simState.isPlaying}
+					<svg viewBox="0 0 24 24" fill="currentColor">
+						<rect x="6" y="4" width="4" height="16" rx="1" />
+						<rect x="14" y="4" width="4" height="16" rx="1" />
+					</svg>
+				{:else}
+					<svg viewBox="0 0 24 24" fill="currentColor">
+						<path d="M8 5.14v14l11-7-11-7z" />
+					</svg>
+				{/if}
+			</button>
+		{/if}
 
 		<button class="control-btn" onclick={onstep} data-tooltip="Step (S)" disabled={simState.isPlaying} aria-label="Step">
 			<svg viewBox="0 0 24 24" fill="currentColor">

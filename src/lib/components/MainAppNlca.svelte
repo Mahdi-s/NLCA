@@ -248,6 +248,10 @@
 		showHelp={showHelp}
 		showInitialize={showInitialize}
 		showAbout={showAbout}
+		experimentActive={!!experimentManager.active}
+		experimentStatus={experimentManager.active?.status}
+		onexperimentpause={() => experimentManager.active && experimentManager.pauseExperiment(experimentManager.active.id)}
+		onexperimentresume={() => experimentManager.active && experimentManager.resumeExperiment(experimentManager.active.id)}
 	/>
 
 	{#if showHelp}
