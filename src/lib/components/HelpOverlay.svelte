@@ -82,50 +82,51 @@
 				<div class="columns nlca-help">
 					<div class="column">
 						<section class="shortcut-group">
-							<h3>How It Works</h3>
-							<div class="shortcut"><kbd>Gen</kbd><span>One “generation” = the model decides the next state for every cell, then the grid updates all at once.</span></div>
-							<div class="shortcut"><kbd>In</kbd><span>Each decision sees your coordinates, previous state, neighborhood snapshot, and (optionally) short per-cell history.</span></div>
-							<div class="shortcut"><kbd>Out</kbd><span>Each cell returns `0` or `1` (and optional color). Outputs are applied synchronously to form the next frame.</span></div>
+							<h3>Core Flow</h3>
+							<div class="shortcut"><kbd>1</kbd><span>Pick a <strong>model</strong> and set your OpenRouter key in NLCA Settings.</span></div>
+							<div class="shortcut"><kbd>2</kbd><span>Open <strong>Prompt</strong> in the toolbar and choose or write a task.</span></div>
+							<div class="shortcut"><kbd>3</kbd><span>Press <kbd>Enter</kbd> (or Play) — a new experiment starts and appears in the sidebar.</span></div>
+							<div class="shortcut"><kbd>4</kbd><span>Drag the <strong>frame scrubber</strong> above the toolbar to replay any generation.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Shortcuts</h3>
+							<div class="shortcut"><kbd>Enter</kbd><span>Play / pause / create experiment</span></div>
+							<div class="shortcut"><kbd>E</kbd><span>Toggle experiments sidebar</span></div>
+							<div class="shortcut"><kbd>I</kbd><span>Initialize grid pattern</span></div>
+							<div class="shortcut"><kbd>D</kbd><span>Clear grid</span></div>
+							<div class="shortcut"><kbd>Esc</kbd><span>Close any open panel</span></div>
 						</section>
 
 						<section class="shortcut-group">
 							<h3>Neighborhoods</h3>
-							<div class="shortcut"><kbd>M</kbd><span>Moore (8) — the 8 surrounding cells.</span></div>
-							<div class="shortcut"><kbd>V</kbd><span>Von Neumann (4) — up/down/left/right.</span></div>
-							<div class="shortcut"><kbd>X</kbd><span>Extended Moore (24) — 5×5 ring around the cell.</span></div>
-							<div class="shortcut"><kbd>Edge</kbd><span>NLCA uses plane boundaries by default (outside the grid counts as dead).</span></div>
-						</section>
-
-						<section class="shortcut-group">
-							<h3>Stepping Modes</h3>
-							<div class="shortcut"><kbd>Frame</kbd><span>Frame-batched: 1 model call per generation (fastest). Requires structured JSON output.</span></div>
-							<div class="shortcut"><kbd>SSE</kbd><span>Stream frame updates: progressive fill while waiting (works only in frame-batched mode).</span></div>
-							<div class="shortcut"><kbd>Cell</kbd><span>Cell-mode: many parallel calls (one per cell). Uses `Max Concurrency` + `Batch size`.</span></div>
+							<div class="shortcut"><kbd>Moore</kbd><span>8 surrounding cells</span></div>
+							<div class="shortcut"><kbd>VN</kbd><span>Von Neumann — up, down, left, right</span></div>
+							<div class="shortcut"><kbd>Ext</kbd><span>Extended Moore — 5×5 ring (24 cells)</span></div>
 						</section>
 					</div>
 
 					<div class="column">
 						<section class="shortcut-group">
-							<h3>Prompts & Behavior</h3>
-							<div class="shortcut"><kbd>Preset</kbd><span>Pick a task preset, then tweak the task text to shape emergent behavior.</span></div>
-							<div class="shortcut"><kbd>Task</kbd><span>The task is the “rule” cells follow. For stable patterns, describe the goal + local heuristics.</span></div>
-							<div class="shortcut"><kbd>Adv</kbd><span>Advanced Mode lets you edit the full template (with placeholders like {'{{GRID}}'} and {'{{OUTPUT_CONTRACT}}'}).</span></div>
-							<div class="shortcut"><kbd>Color</kbd><span>Enable Color Mode to let alive cells also emit a `#RRGGBB` color (useful for scenes/gradients).</span></div>
-							<div class="shortcut"><kbd>View</kbd><span>`View Prompt` shows the exact prompt being fed to the model for the current step mode.</span></div>
+							<h3>Experiments Sidebar</h3>
+							<div class="shortcut"><kbd>+</kbd><span>Clears selection so the next Play creates a new experiment.</span></div>
+							<div class="shortcut"><kbd>Card</kbd><span>Click any experiment to make it active — canvas + HUD update to show it.</span></div>
+							<div class="shortcut"><kbd>Pause</kbd><span>Each experiment has its own play/pause; the toolbar controls the active one.</span></div>
 						</section>
 
 						<section class="shortcut-group">
-							<h3>Settings</h3>
-							<div class="shortcut"><kbd>Key</kbd><span>Set your OpenRouter API key + model in `NLCA Settings`.</span></div>
-							<div class="shortcut"><kbd>Conc</kbd><span>`Max Concurrency` trades speed for rate-limit pressure (cell-mode).</span></div>
-							<div class="shortcut"><kbd>Mem</kbd><span>`Memory window` controls how much per-cell history is included (0 = stateless).</span></div>
+							<h3>Prompts</h3>
+							<div class="shortcut"><kbd>Task</kbd><span>Plain-English rule the model follows each step. Describe the goal + local heuristics.</span></div>
+							<div class="shortcut"><kbd>Preset</kbd><span>Library of ready-made tasks organised by category.</span></div>
+							<div class="shortcut"><kbd>Adv</kbd><span>Advanced mode exposes the full template with {'{{GRID}}'} and {'{{OUTPUT_CONTRACT}}'} placeholders.</span></div>
+							<div class="shortcut"><kbd>View</kbd><span>Click "View Prompt" in the HUD to see the exact prompt used for the current experiment.</span></div>
 						</section>
 
 						<section class="shortcut-group">
-							<h3>Debug & Playback</h3>
-							<div class="shortcut"><kbd>Dbg</kbd><span>`Show Debug` logs per-cell inputs/outputs and timings (useful for diagnosing prompt failures).</span></div>
-							<div class="shortcut"><kbd>Run</kbd><span>`Batch Run` precomputes N generations; `Playback` scrubs cached frames and stores runs locally.</span></div>
-							<div class="shortcut"><kbd>$</kbd><span>Cost, calls, and latency update as the simulation runs.</span></div>
+							<h3>HUD</h3>
+							<div class="shortcut"><kbd>Label</kbd><span>Top row shows the active experiment and its live status.</span></div>
+							<div class="shortcut"><kbd>$</kbd><span>Cost, stored frames, and latency update after every generation.</span></div>
+							<div class="shortcut"><kbd>Run</kbd><span>8-char run ID — each experiment stores its frames to its own local SQLite tape.</span></div>
 						</section>
 					</div>
 				</div>

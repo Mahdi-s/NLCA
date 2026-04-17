@@ -6,7 +6,7 @@
 	import type { BoundaryMode } from '../stores/simulation.svelte.js';
 	import { addSnapshotWithBefore, resetHistory } from '../stores/history.js';
 	import { isTourActive } from '../utils/tour.js';
-	import { isModalOpen, openModal } from '../stores/modalManager.svelte.js';
+	import { isModalOpen } from '../stores/modalManager.svelte.js';
 	import { brushShapeToIndex, spectrumModeToIndex } from '@games-of-life/core';
 	import { initializeAudio, getAudioState, updateAudio, updateAudioSimulation, silenceAudio } from '../stores/audio.svelte.js';
 
@@ -2189,62 +2189,9 @@
 	></canvas>
 
 	{#if nlcaMode && !error}
-		<div class="nlca-hud">
-			<div class="row">
-				<span class="pill">NLCA</span>
-				{#if nlcaStepInFlight && nlcaProgress}
-					<span class="muted">Thinking… {nlcaProgress.completed}/{nlcaProgress.total}</span>
-				{:else if nlcaStepInFlight}
-					<span class="muted">Thinking…</span>
-				{:else if !nlcaApiKey}
-					<span class="muted">No API key (open NLCA Settings)</span>
-				{:else}
-					<span class="muted">Ready</span>
-				{/if}
-			</div>
-
-			{#if nlcaStepInFlight && nlcaProgress}
-				<div class="progress-bar">
-					<div class="progress-fill" style="width: {(nlcaProgress.completed / nlcaProgress.total) * 100}%"></div>
-				</div>
-			{/if}
-
-			<div class="grid">
-				<div><span class="k">Grid</span> <span class="v">{simState.gridWidth}×{simState.gridHeight}</span></div>
-				<div><span class="k">Neighborhood</span> <span class="v">{nlcaNeighborhood}</span></div>
-				<div><span class="k">Run</span> <span class="v mono">{nlcaRunId.slice(0, 8)}…</span></div>
-				<div><span class="k">Stored</span> <span class="v">{nlcaLastStoredGen ?? 0}</span></div>
-				<div><span class="k">Avg latency</span> <span class="v">{nlcaAvgLatencyMs ? `${Math.round(nlcaAvgLatencyMs)}ms` : '—'}</span></div>
-				<div><span class="k">Calls</span> <span class="v">{nlcaTotalCalls.toLocaleString()}</span></div>
-				<div><span class="k">Cost</span> <span class="v cost">${nlcaTotalCost.toFixed(4)}</span></div>
-			</div>
-
-			<div class="row hud-actions">
-				<button class="debug-btn" onclick={() => nlcaShowDebug = !nlcaShowDebug} data-tooltip="View LLM input/output logs">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-						<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-						<polyline points="14,2 14,8 20,8"/>
-						<line x1="16" y1="13" x2="8" y2="13"/>
-						<line x1="16" y1="17" x2="8" y2="17"/>
-						<line x1="10" y1="9" x2="8" y2="9"/>
-					</svg>
-					{nlcaShowDebug ? 'Hide Debug' : 'Show Debug'}
-				</button>
-				<button class="debug-btn" onclick={() => openModal('nlcaPrompt')} data-tooltip="View system & user prompts">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-						<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-					</svg>
-					View Prompt
-				</button>
-			</div>
-
-			{#if nlcaLastError}
-				<div class="err">{nlcaLastError}</div>
-			{/if}
-			{#if nlcaBenchmarkSummary}
-				<div class="muted" style="margin-top: 8px; white-space: pre-wrap;">{nlcaBenchmarkSummary}</div>
-			{/if}
-		</div>
+		{#if nlcaBenchmarkSummary}
+			<div class="nlca-benchmark-result">{nlcaBenchmarkSummary}</div>
+		{/if}
 
 		<!-- Timeline for frame visualization -->
 		{#if nlcaBatchRunTarget > 0 || nlcaBufferedFrames.length > 0}
@@ -2374,8 +2321,7 @@
 		font-size: 0.9rem;
 	}
 
-	/* NLCA HUD styles */
-	.nlca-hud {
+	.nlca-benchmark-result {
 		position: absolute;
 		left: 12px;
 		top: 12px;
@@ -2386,130 +2332,9 @@
 		padding: 10px 12px;
 		backdrop-filter: blur(14px);
 		color: #eaeaf2;
-		pointer-events: auto;
-		z-index: 100;
-	}
-	.nlca-hud .row {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		margin-bottom: 8px;
-	}
-	.nlca-hud .pill {
-		font-weight: 900;
-		font-size: 0.72rem;
-		letter-spacing: 0.04em;
-		padding: 2px 8px;
-		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.08);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-	}
-	.nlca-hud .muted {
-		color: rgba(255, 255, 255, 0.7);
 		font-size: 0.82rem;
-	}
-	.nlca-hud .grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 6px 10px;
-		font-size: 0.82rem;
-		margin-bottom: 8px;
-	}
-	.nlca-hud .k {
-		color: rgba(255, 255, 255, 0.65);
-		margin-right: 6px;
-	}
-	.nlca-hud .v.cost {
-		color: #4ade80;
-		font-weight: 600;
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-	}
-	.nlca-hud .mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-	}
-	.nlca-hud .err {
-		margin-top: 8px;
-		color: #ffb3b3;
-		font-size: 0.8rem;
-		line-height: 1.3;
 		white-space: pre-wrap;
-	}
-	.nlca-hud .progress-bar {
-		width: 100%;
-		height: 4px;
-		background: rgba(255, 255, 255, 0.1);
-		border-radius: 2px;
-		margin-bottom: 8px;
-		overflow: hidden;
-	}
-	.nlca-hud .progress-fill {
-		height: 100%;
-		background: linear-gradient(90deg, #4ade80, #2dd4bf);
-		transition: width 0.15s ease-out;
-		border-radius: 2px;
-	}
-	.nlca-hud .hud-actions {
-		gap: 8px;
-	}
-	.nlca-hud .debug-btn {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		background: rgba(255, 255, 255, 0.08);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 8px;
-		color: #eaeaf2;
-		padding: 5px 10px;
-		font-size: 0.75rem;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-	.nlca-hud .debug-btn:hover {
-		background: rgba(255, 255, 255, 0.15);
-	}
-	.nlca-hud .debug-btn svg {
-		flex-shrink: 0;
-	}
-	/* Tooltip for HUD buttons */
-	.nlca-hud .debug-btn[data-tooltip]::after {
-		content: attr(data-tooltip);
-		position: absolute;
-		top: calc(100% + 8px);
-		left: 50%;
-		transform: translateX(-50%);
-		background: rgba(12, 12, 18, 0.95);
-		color: #e0e0e0;
-		padding: 0.35rem 0.6rem;
-		border-radius: 5px;
-		font-size: 0.65rem;
-		white-space: nowrap;
-		opacity: 0;
-		visibility: hidden;
-		transition: opacity 0.15s, visibility 0.15s;
-		pointer-events: none;
-		z-index: 200;
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-	}
-	.nlca-hud .debug-btn[data-tooltip]::before {
-		content: '';
-		position: absolute;
-		top: calc(100% + 3px);
-		left: 50%;
-		transform: translateX(-50%);
-		border: 5px solid transparent;
-		border-bottom-color: rgba(12, 12, 18, 0.95);
-		opacity: 0;
-		visibility: hidden;
-		transition: opacity 0.15s, visibility 0.15s;
-		pointer-events: none;
-		z-index: 201;
-	}
-	.nlca-hud .debug-btn[data-tooltip]:hover::after,
-	.nlca-hud .debug-btn[data-tooltip]:hover::before {
-		opacity: 1;
-		visibility: visible;
+		z-index: 100;
 	}
 
 	/* NLCA Timeline wrapper */

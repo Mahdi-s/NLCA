@@ -1,56 +1,16 @@
 <script lang="ts">
 	import type { ExperimentManager, Experiment } from '$lib/nlca/experimentManager.svelte.js';
-	import type { ExperimentConfig } from '$lib/nlca/types.js';
-	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
-	import { getNlcaPromptState } from '$lib/stores/nlcaPrompt.svelte.js';
 
 	interface Props {
 		manager: ExperimentManager;
 		open: boolean;
 		onclose: () => void;
+		onNew: () => void;
 	}
 
-	let { manager, open, onclose }: Props = $props();
+	let { manager, open, onclose, onNew }: Props = $props();
 
-	const nlcaSettings = getNlcaSettingsState();
-	const nlcaPrompt = getNlcaPromptState();
-
-	let targetFrames = $state(50);
 	let confirmDeleteId = $state<string | null>(null);
-
-	/** Build an ExperimentConfig from the current global settings */
-	function configFromCurrentSettings(): ExperimentConfig {
-		return {
-			apiKey: nlcaSettings.apiKey,
-			model: nlcaSettings.model,
-			temperature: 0,
-			maxOutputTokens: 64,
-			gridWidth: nlcaSettings.gridWidth,
-			gridHeight: nlcaSettings.gridHeight,
-			neighborhood: nlcaSettings.neighborhood,
-			cellColorEnabled: nlcaPrompt.cellColorHexEnabled,
-			taskDescription: nlcaPrompt.taskDescription,
-			promptPresetId: undefined,
-			useAdvancedMode: nlcaPrompt.useAdvancedMode,
-			advancedTemplate: nlcaPrompt.advancedTemplate,
-			memoryWindow: nlcaSettings.memoryWindow,
-			maxConcurrency: nlcaSettings.maxConcurrency,
-			batchSize: nlcaSettings.batchSize,
-			frameBatched: nlcaSettings.frameBatched,
-			frameStreamed: nlcaSettings.frameStreamed,
-			cellTimeoutMs: 30_000,
-			compressPayload: false,
-			deduplicateRequests: false,
-			targetFrames
-		};
-	}
-
-	function handleLaunch() {
-		if (!nlcaSettings.apiKey) return;
-		manager.createExperiment(configFromCurrentSettings()).catch(err => {
-			console.error('[ExperimentPanel] Failed to create experiment:', err);
-		});
-	}
 
 	function statusIcon(status: Experiment['status']): string {
 		switch (status) {
@@ -82,33 +42,10 @@
 <div class="panel" class:open onkeydown={() => {}}>
 	<div class="panel-header">
 		<span class="panel-title">Experiments</span>
-		<button class="panel-close" onclick={onclose} aria-label="Close panel">×</button>
-	</div>
-
-	<!-- Launch section -->
-	<div class="launch-section">
-		<div class="launch-info">
-			<span class="launch-label">Current config</span>
-			<span class="launch-detail">{nlcaSettings.model.split('/').pop()}</span>
-			<span class="launch-detail">{nlcaSettings.gridWidth}×{nlcaSettings.gridHeight} · {nlcaSettings.neighborhood}</span>
+		<div class="panel-header-actions">
+			<button class="panel-new" onclick={onNew} aria-label="New experiment" title="New experiment (clears selection — Press Play to start)">+</button>
+			<button class="panel-close" onclick={onclose} aria-label="Close panel">×</button>
 		</div>
-		<div class="launch-row">
-			<label class="frames-field">
-				<input type="number" bind:value={targetFrames} min={1} max={10000} />
-				<span>frames</span>
-			</label>
-			<button
-				class="launch-btn"
-				onclick={handleLaunch}
-				disabled={!nlcaSettings.apiKey}
-				title={!nlcaSettings.apiKey ? 'Set API key in NLCA Settings first' : 'Launch experiment with current settings'}
-			>
-				Launch
-			</button>
-		</div>
-		{#if !nlcaSettings.apiKey}
-			<span class="launch-warn">Set API key in NLCA Settings first</span>
-		{/if}
 	</div>
 
 	<!-- Experiment list -->
@@ -150,7 +87,7 @@
 			</div>
 		{:else}
 			<div class="empty-state">
-				No experiments yet. Configure your settings, then hit Launch.
+				No experiments yet. Configure your settings and press Play to start one.
 			</div>
 		{/each}
 	</div>
@@ -196,6 +133,32 @@
 		color: var(--ui-text-hover, #fff);
 	}
 
+	.panel-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.panel-new {
+		background: none;
+		border: 1px solid var(--ui-border, rgba(255, 255, 255, 0.08));
+		color: var(--ui-text, #888);
+		font-size: 18px;
+		line-height: 1;
+		width: 26px;
+		height: 26px;
+		border-radius: 6px;
+		cursor: pointer;
+		display: grid;
+		place-items: center;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.panel-new:hover {
+		background: rgba(255, 255, 255, 0.08);
+		color: var(--ui-text-hover, #fff);
+	}
+
 	.panel-close {
 		background: none;
 		border: none;
@@ -208,90 +171,6 @@
 
 	.panel-close:hover {
 		color: var(--ui-text-hover, #fff);
-	}
-
-	/* Launch section */
-	.launch-section {
-		padding: 12px 14px;
-		border-bottom: 1px solid var(--ui-border, rgba(255, 255, 255, 0.08));
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		flex-shrink: 0;
-	}
-
-	.launch-info {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.launch-label {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--ui-text, #888);
-	}
-
-	.launch-detail {
-		font-size: 12px;
-		color: var(--ui-text-hover, #fff);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.launch-row {
-		display: flex;
-		gap: 8px;
-		align-items: center;
-	}
-
-	.frames-field {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		flex: 1;
-	}
-
-	.frames-field input {
-		width: 60px;
-		background: var(--ui-input-bg, rgba(0, 0, 0, 0.3));
-		border: 1px solid var(--ui-border, rgba(255, 255, 255, 0.08));
-		border-radius: 6px;
-		color: var(--ui-text-hover, #fff);
-		padding: 6px 8px;
-		font-size: 12px;
-		font-family: inherit;
-	}
-
-	.frames-field span {
-		color: var(--ui-text, #888);
-		font-size: 11px;
-	}
-
-	.launch-btn {
-		background: var(--ui-accent, #2dd4bf);
-		color: var(--ui-apply-text, #0a0a0f);
-		border: none;
-		border-radius: 6px;
-		padding: 6px 14px;
-		font-size: 12px;
-		font-weight: 600;
-		cursor: pointer;
-		transition: filter 0.15s;
-	}
-
-	.launch-btn:hover:not(:disabled) {
-		filter: brightness(1.15);
-	}
-
-	.launch-btn:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
-
-	.launch-warn {
-		font-size: 10px;
-		color: #ef4444;
 	}
 
 	/* Experiment list */

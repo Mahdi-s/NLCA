@@ -13,8 +13,8 @@ export type ModalId =
 	| 'historyTimeline'
 	| 'audio'
 	| 'nlcaSettings'
-	| 'nlcaPlayback'
 	| 'nlcaPrompt'
+	| 'nlcaPromptViewer'
 	| 'nlcaBatchRun';
 
 export interface ModalState {
@@ -37,8 +37,8 @@ const modalStates = $state<Record<ModalId, ModalState>>({
 	historyTimeline: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	audio: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaSettings: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
-	nlcaPlayback: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaPrompt: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaPromptViewer: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaBatchRun: { isOpen: false, position: null, zIndex: BASE_Z_INDEX }
 });
 

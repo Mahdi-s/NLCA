@@ -33,6 +33,9 @@ export interface Experiment {
 	currentGrid: Uint32Array | null;
 	currentGeneration: number;
 	bufferStatus: BufferStatus | null;
+	totalCost: number;
+	totalCalls: number;
+	lastLatencyMs: number | null;
 }
 
 function generateDbFilename(config: ExperimentConfig): string {
@@ -77,6 +80,7 @@ function buildPromptConfig(config: ExperimentConfig): PromptConfig {
 export class ExperimentManager {
 	experiments = $state<Record<string, Experiment>>({});
 	activeId = $state<string | null>(null);
+	experimentList = $derived(Object.values(this.experiments));
 	private experimentCounter = 0;
 	private index: ExperimentIndex;
 	private computeAbortControllers = new Map<string, AbortController>();
@@ -88,10 +92,6 @@ export class ExperimentManager {
 	get active(): Experiment | null {
 		if (!this.activeId) return null;
 		return this.experiments[this.activeId] ?? null;
-	}
-
-	get experimentList(): Experiment[] {
-		return Object.values(this.experiments);
 	}
 
 	async loadFromIndex(): Promise<void> {
@@ -116,7 +116,10 @@ export class ExperimentManager {
 				errorMessage: meta.errorMessage,
 				currentGrid: null,
 				currentGeneration: 0,
-				bufferStatus: null
+				bufferStatus: null,
+				totalCost: 0,
+				totalCalls: 0,
+				lastLatencyMs: null
 			};
 			this.experiments[meta.id] = exp;
 			this.experimentCounter++;
@@ -146,7 +149,10 @@ export class ExperimentManager {
 			dbFilename,
 			currentGrid: null,
 			currentGeneration: 0,
-			bufferStatus: null
+			bufferStatus: null,
+			totalCost: 0,
+			totalCalls: 0,
+			lastLatencyMs: null
 		};
 
 		this.experiments[id] = exp;
@@ -243,6 +249,19 @@ export class ExperimentManager {
 					exp.currentGrid = result.next;
 					exp.currentGeneration = generation;
 					exp.progress = { current: generation, target: exp.progress.target };
+
+					if (exp.stepper) {
+						const stats = exp.stepper.getCostStats();
+						exp.totalCost = stats.totalCost;
+						exp.totalCalls = stats.callCount;
+					}
+					if (result.metrics && result.metrics.latency8.length > 0) {
+						let sum = 0;
+						for (let j = 0; j < result.metrics.latency8.length; j++) {
+							sum += result.metrics.latency8[j] ?? 0;
+						}
+						exp.lastLatencyMs = (sum / result.metrics.latency8.length) * 10;
+					}
 
 					await exp.tape.appendFrame({
 						runId: id,

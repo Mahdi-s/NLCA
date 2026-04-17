@@ -100,7 +100,8 @@
 	>
 		<div class="header">
 			<HeartIcon size={24} animated={true} />
-			<span class="title">Games of Life</span>
+			<span class="title">NLCA</span>
+			<span class="subtitle">Natural Language Cellular Automata</span>
 			<button class="close-btn" onclick={onclose} aria-label="Close">✕</button>
 		</div>
 
@@ -108,18 +109,19 @@
 			<!-- What is this section -->
 			<div class="intro-section">
 				<p>
-					<strong>Cellular automata</strong> are discrete computational systems where cells on a grid 
-					evolve based on simple rules about their neighbors. Despite their simplicity, they can produce 
-					remarkably complex and beautiful patterns.
+					<strong>NLCA</strong> replaces the fixed rules of a cellular automaton with a language model.
+					Every cell is a tiny agent: it sees its neighborhood, reads a natural-language task, and decides
+					whether to be alive or dead on the next frame.
 				</p>
 				<p>
-					<strong>Conway's Game of Life</strong> (1970) is the most famous example: cells are born with 
-					exactly 3 neighbors and survive with 2 or 3. This app lets you explore Life and many other 
-					rule variants, all running on your GPU for smooth, real-time simulation.
+					Write the rule in English — "form stable clusters," "draw a smiley face,"
+					"act like Conway's Life" — and watch emergent behavior unfold one generation at a time.
+					Switch models, compare experiments side-by-side, and scrub back through every frame.
 				</p>
 				<p>
-					This app is powered by the <strong>Games of Life</strong> library packages:
-					<code>@games-of-life/core</code>, <code>@games-of-life/webgpu</code>, <code>@games-of-life/svelte</code>.
+					Inspired by <strong>Games of Life</strong> by Neo Mohsenvand, which provides the cellular
+					automaton substrate (<code>@games-of-life/core</code>, <code>@games-of-life/webgpu</code>,
+					<code>@games-of-life/svelte</code>).
 				</p>
 			</div>
 
@@ -129,32 +131,32 @@
 					<div class="section">
 						<h3>
 							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-								<path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+								<circle cx="12" cy="12" r="10"/>
+								<path d="M12 6v6l4 2"/>
 							</svg>
-							Technology
+							What You Can Do
 						</h3>
 						<ul>
-							<li><strong>WebGPU</strong> — GPU compute shaders for parallel simulation</li>
-							<li><strong>@games-of-life/*</strong> — reusable library powering this app</li>
-							<li><strong>Svelte 5</strong> — Reactive UI with runes</li>
-							<li><strong>SvelteKit</strong> — Static site generation</li>
+							<li><strong>Run experiments</strong> — one press of Play starts a new one</li>
+							<li><strong>Switch models</strong> — any OpenRouter model, live-listed in settings</li>
+							<li><strong>Write prompts</strong> — preset library or free-form natural language</li>
+							<li><strong>Scrub frames</strong> — drag the scrubber to replay any generation</li>
+							<li><strong>Compare runs</strong> — keep a sidebar of experiments and flip between them</li>
 						</ul>
 					</div>
 
 					<div class="section">
 						<h3>
 							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-								<circle cx="12" cy="12" r="10"/>
-								<path d="M12 6v6l4 2"/>
+								<path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
 							</svg>
-							Features
+							Built With
 						</h3>
 						<ul>
-							<li>Multiple rule presets (Life, HighLife, Day & Night...)</li>
-							<li>Custom rule editor with live preview</li>
-							<li>Multi-state cellular automata (Brian's Brain, etc.)</li>
-							<li>Interactive painting and pattern placement</li>
-							<li>Zoom, pan, and configurable grid sizes</li>
+							<li><strong>OpenRouter</strong> — unified access to LLMs from every provider</li>
+							<li><strong>@games-of-life/*</strong> — CA engine and WebGPU rendering</li>
+							<li><strong>SQLite (OPFS)</strong> — local frame tape per experiment</li>
+							<li><strong>Svelte 5 + SvelteKit</strong> — reactive UI, static build</li>
 						</ul>
 					</div>
 				</div>
@@ -173,13 +175,13 @@
 						</h3>
 						<div class="tutorial-content">
 							<div class="tutorial-description">
-								<p>The grid is made of <strong>cells</strong>. Each cell's state is somewhere between <strong>alive</strong> and <strong>dead</strong>.</p>
-								<p>A cell's <strong>neighbors</strong> are the surrounding cells (8 in this example: up, down, left, right, and diagonals).</p>
-								<p>Every step, each cell follows the rules:</p>
+								<p>Every frame, each <strong>cell</strong> asks the model one question: given my <strong>neighborhood</strong> and the <strong>task prompt</strong>, what should I be next?</p>
+								<p>The model answers <code>0</code> or <code>1</code> for each cell. All answers apply simultaneously — that's one generation.</p>
+								<p>Compared to a classical CA:</p>
 								<ul class="rules-list">
-									<li><span class="rule-birth">Birth</span> — Dead + exactly 3 alive neighbors → alive</li>
-									<li><span class="rule-survive">Survive</span> — Alive + 2-3 alive neighbors → stays</li>
-									<li><span class="rule-death">Death</span> — Otherwise → dies</li>
+									<li><span class="rule-birth">Rule</span> — is a natural-language prompt, not a fixed formula</li>
+									<li><span class="rule-survive">Neighborhood</span> — Moore (8), Von Neumann (4), or Extended (24)</li>
+									<li><span class="rule-death">Memory</span> — optional per-cell history gives the model context</li>
 						</ul>
 							</div>
 							<div class="tutorial-grids">
@@ -196,7 +198,7 @@
 									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 										<path d="M5 12h14M12 5l7 7-7 7"/>
 									</svg>
-									<span>rule</span>
+									<span>LLM</span>
 								</div>
 								<div class="grid-container">
 									<div class="mini-grid" style="--alive-color: {aliveColor()}; --dead-color: {deadColor()}; --grid-border: {gridBorderColor()};">
@@ -215,7 +217,8 @@
 
 			<div class="footer">
 				<div class="author">
-					Developed by <strong>Neo Mohsenvand</strong>
+					Developed by <strong>Mahdi Saeedi</strong> 
+					and <strong>Neo Mohsenvand</strong>
 				</div>
 				<div class="footer-buttons">
 					<button class="tour-btn" onclick={handleStartTour}>
@@ -226,9 +229,9 @@
 						</svg>
 						<span>Take a Tour</span>
 					</button>
-					<a 
-						href="https://github.com/NeoVand/games-of-life" 
-						target="_blank" 
+					<a
+						href="https://github.com/NeoVand/games-of-life"
+						target="_blank"
 						rel="noopener noreferrer"
 						class="github-link"
 					>
@@ -279,11 +282,17 @@
 	}
 
 	.title {
-		flex: 1;
 		font-size: 1rem;
 		font-weight: 700;
 		color: var(--ui-text-hover, #fff);
-		letter-spacing: -0.02em;
+		letter-spacing: 0.02em;
+	}
+
+	.subtitle {
+		flex: 1;
+		font-size: 0.7rem;
+		color: var(--ui-text, #888);
+		letter-spacing: 0.02em;
 	}
 
 	.close-btn {

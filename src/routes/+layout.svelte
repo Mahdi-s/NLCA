@@ -99,9 +99,9 @@
 		return `rgba(255, 255, 255, 0.1)`;
 	});
 
-	const siteTitle = 'NLCA — Neural Life Cellular Automata';
+	const siteTitle = 'NLCA — Natural Language Cellular Automata';
 	const siteDescription =
-		'LLM-powered cellular automaton: each cell’s next state is decided by an AI agent.';
+		'Cellular automata with language-model rules: write a task in English and watch each cell decide its next state.';
 	const thumbnailUrl = 'https://neovand.github.io/games-of-life/thumbnail.jpg';
 </script>
 
@@ -114,7 +114,7 @@
 	<meta property="og:title" content={siteTitle} />
 	<meta property="og:description" content={siteDescription} />
 	<meta property="og:image" content={thumbnailUrl} />
-	<meta property="og:image:alt" content="Neural Life Cellular Automata" />
+	<meta property="og:image:alt" content="Natural Language Cellular Automata" />
 
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image" />

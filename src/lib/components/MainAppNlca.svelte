@@ -9,11 +9,15 @@
 	import InfoOverlay from '$lib/components/InfoOverlay.svelte';
 	import InitializeModal from '$lib/components/InitializeModal.svelte';
 	import NlcaSettingsModal from '$lib/components/NlcaSettingsModal.svelte';
-	import NlcaPlaybackModal from '$lib/components/NlcaPlaybackModal.svelte';
 	import NlcaPromptModal from '$lib/components/NlcaPromptModal.svelte';
 	import NlcaBatchRunModal from '$lib/components/NlcaBatchRunModal.svelte';
+	import NlcaPromptViewer from '$lib/components/NlcaPromptViewer.svelte';
+	import NlcaHUD from '$lib/components/NlcaHUD.svelte';
 	import NlcaExperimentPanel from './NlcaExperimentPanel.svelte';
 	import { ExperimentManager } from '$lib/nlca/experimentManager.svelte.js';
+	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
+	import { getNlcaPromptState } from '$lib/stores/nlcaPrompt.svelte.js';
+	import type { ExperimentConfig } from '$lib/nlca/types.js';
 
 	import { getSimulationState, getUIState, type GridScale } from '$lib/stores/simulation.svelte.js';
 	import { getModalStates, toggleModal, closeModal } from '$lib/stores/modalManager.svelte.js';
@@ -21,6 +25,8 @@
 
 	const simState = getSimulationState();
 	const uiState = getUIState();
+	const nlcaSettings = getNlcaSettingsState();
+	const nlcaPrompt = getNlcaPromptState();
 
 	const modalStates = $derived(getModalStates());
 	const showHelp = $derived(modalStates.help.isOpen);
@@ -28,8 +34,8 @@
 	const showAbout = $derived(modalStates.about.isOpen);
 	const showSettings = $derived(modalStates.settings.isOpen);
 	const showNlcaSettings = $derived(modalStates.nlcaSettings.isOpen);
-	const showNlcaPlayback = $derived(modalStates.nlcaPlayback.isOpen);
 	const showNlcaPrompt = $derived(modalStates.nlcaPrompt.isOpen);
+	const showNlcaPromptViewer = $derived(modalStates.nlcaPromptViewer.isOpen);
 	const showNlcaBatchRun = $derived(modalStates.nlcaBatchRun.isOpen);
 
 	// Batch run state (passed from Canvas)
@@ -55,6 +61,52 @@
 			canvas.setExperimentGrid(active.currentGrid, active.config.gridWidth, active.config.gridHeight);
 		}
 	});
+
+	function configFromCurrentSettings(): ExperimentConfig {
+		return {
+			apiKey: nlcaSettings.apiKey,
+			model: nlcaSettings.model,
+			temperature: 0,
+			maxOutputTokens: 64,
+			gridWidth: nlcaSettings.gridWidth,
+			gridHeight: nlcaSettings.gridHeight,
+			neighborhood: nlcaSettings.neighborhood,
+			cellColorEnabled: nlcaPrompt.cellColorHexEnabled,
+			taskDescription: nlcaPrompt.taskDescription,
+			promptPresetId: undefined,
+			useAdvancedMode: nlcaPrompt.useAdvancedMode,
+			advancedTemplate: nlcaPrompt.advancedTemplate,
+			memoryWindow: nlcaSettings.memoryWindow,
+			maxConcurrency: nlcaSettings.maxConcurrency,
+			batchSize: nlcaSettings.batchSize,
+			frameBatched: nlcaSettings.frameBatched,
+			frameStreamed: nlcaSettings.frameStreamed,
+			cellTimeoutMs: 30_000,
+			compressPayload: false,
+			deduplicateRequests: false,
+			targetFrames: nlcaSettings.targetFrames
+		};
+	}
+
+	function handlePlay() {
+		const active = experimentManager.active;
+		if (active) {
+			if (active.status === 'running') {
+				experimentManager.pauseExperiment(active.id);
+			} else if (active.status === 'paused') {
+				experimentManager.resumeExperiment(active.id);
+			}
+		} else {
+			experimentManager.createExperiment(configFromCurrentSettings()).catch((err) => {
+				console.error('[MainAppNlca] Failed to create experiment:', err);
+			});
+			showExperimentPanel = true;
+		}
+	}
+
+	function handleNewExperiment() {
+		experimentManager.activeId = null;
+	}
 
 	function handleClear() {
 		canvas.clear();
@@ -105,14 +157,23 @@
 	function openNlcaSettingsModal() {
 		toggleModal('nlcaSettings');
 	}
-	function openNlcaPlaybackModal() {
-		toggleModal('nlcaPlayback');
-	}
 	function openNlcaPromptModal() {
 		toggleModal('nlcaPrompt');
 	}
+	function openNlcaPromptViewer() {
+		toggleModal('nlcaPromptViewer');
+	}
 	function openNlcaBatchRunModal() {
 		toggleModal('nlcaBatchRun');
+	}
+
+	async function handleSeek(generation: number) {
+		const active = experimentManager.active;
+		if (!active) return;
+		if (active.status === 'running') {
+			await experimentManager.pauseExperiment(active.id);
+		}
+		await experimentManager.seekToGeneration(active.id, generation);
 	}
 	
 	function handleStartBatchRun(generations: number) {
@@ -136,7 +197,7 @@
 		switch (e.code) {
 			case 'Enter':
 				e.preventDefault();
-				simState.togglePlay();
+				handlePlay();
 				break;
 			case 'KeyD':
 				if (!e.ctrlKey && !e.metaKey) {
@@ -167,8 +228,8 @@
 				closeModal('about');
 				closeModal('settings');
 				closeModal('nlcaSettings');
-				closeModal('nlcaPlayback');
 				closeModal('nlcaPrompt');
+				closeModal('nlcaPromptViewer');
 				closeModal('nlcaBatchRun');
 				showExperimentPanel = false;
 				uiState.closeAll();
@@ -190,8 +251,8 @@
 </script>
 
 <svelte:head>
-	<title>NLCA — Neural Life Cellular Automata</title>
-	<meta name="description" content="LLM-powered cellular automaton where each cell's fate is decided by an AI agent" />
+	<title>NLCA — Natural Language Cellular Automata</title>
+	<meta name="description" content="Cellular automata with language-model rules: write a task in English and watch each cell decide its next state." />
 </svelte:head>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -206,6 +267,11 @@
 
 	<InfoOverlay />
 
+	<NlcaHUD
+		experiment={experimentManager.active}
+		onViewPrompt={openNlcaPromptViewer}
+	/>
+
 	<ControlsNlca
 		onclear={handleClear}
 		oninitialize={handleInitialize}
@@ -216,16 +282,18 @@
 		onhelp={openHelp}
 		onabout={openAbout}
 		onnlcasettings={openNlcaSettingsModal}
-		onnlcaplayback={openNlcaPlaybackModal}
+		onnlcaprompt={openNlcaPromptModal}
 		onnlcabatchrun={openNlcaBatchRunModal}
 		onsettings={openSettingsModal}
 		showHelp={showHelp}
 		showInitialize={showInitialize}
 		showAbout={showAbout}
-		experimentActive={!!experimentManager.active}
-		experimentStatus={experimentManager.active?.status}
-		onexperimentpause={() => experimentManager.active && experimentManager.pauseExperiment(experimentManager.active.id)}
-		onexperimentresume={() => experimentManager.active && experimentManager.resumeExperiment(experimentManager.active.id)}
+		experimentActive={true}
+		experimentStatus={experimentManager.active?.status ?? 'paused'}
+		activeExperiment={experimentManager.active}
+		onexperimentpause={handlePlay}
+		onexperimentresume={handlePlay}
+		onseek={handleSeek}
 		onexperiments={() => showExperimentPanel = !showExperimentPanel}
 		showExperimentPanel={showExperimentPanel}
 	/>
@@ -254,12 +322,15 @@
 		<NlcaSettingsModal onclose={() => closeModal('nlcaSettings')} />
 	{/if}
 
-	{#if showNlcaPlayback}
-		<NlcaPlaybackModal onclose={() => closeModal('nlcaPlayback')} />
-	{/if}
-
 	{#if showNlcaPrompt}
 		<NlcaPromptModal onclose={() => closeModal('nlcaPrompt')} />
+	{/if}
+
+	{#if showNlcaPromptViewer}
+		<NlcaPromptViewer
+			experiment={experimentManager.active}
+			onclose={() => closeModal('nlcaPromptViewer')}
+		/>
 	{/if}
 
 	{#if showNlcaBatchRun}
@@ -279,6 +350,7 @@
 		manager={experimentManager}
 		open={showExperimentPanel}
 		onclose={() => showExperimentPanel = false}
+		onNew={handleNewExperiment}
 	/>
 </main>
 

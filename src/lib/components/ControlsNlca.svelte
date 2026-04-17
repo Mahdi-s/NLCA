@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { getSimulationState, getUIState, getSimulationRef } from '../stores/simulation.svelte.js';
-	import { openModal, getModalStates } from '../stores/modalManager.svelte.js';
+	import { getModalStates } from '../stores/modalManager.svelte.js';
 	import { canUndo, canRedo, undo as historyUndo, redo as historyRedo, subscribeHistory } from '../stores/history.js';
+	import NlcaFrameScrubber from './NlcaFrameScrubber.svelte';
+	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
 
 	interface Props {
 		onclear: () => void;
@@ -15,7 +17,7 @@
 		onabout: () => void;
 		onsettings: () => void;
 		onnlcasettings: () => void;
-		onnlcaplayback: () => void;
+		onnlcaprompt: () => void;
 		onnlcabatchrun: () => void;
 		showHelp?: boolean;
 		showInitialize?: boolean;
@@ -23,8 +25,10 @@
 		collapsed?: boolean;
 		experimentActive?: boolean;
 		experimentStatus?: 'running' | 'paused' | 'completed' | 'error';
+		activeExperiment?: Experiment | null;
 		onexperimentpause?: () => void;
 		onexperimentresume?: () => void;
+		onseek?: (generation: number) => void;
 		onexperiments?: () => void;
 		showExperimentPanel?: boolean;
 	}
@@ -40,7 +44,7 @@
 		onabout,
 		onsettings,
 		onnlcasettings,
-		onnlcaplayback,
+		onnlcaprompt,
 		onnlcabatchrun,
 		showHelp = false,
 		showInitialize = false,
@@ -48,8 +52,10 @@
 		collapsed = $bindable(false),
 		experimentActive = false,
 		experimentStatus,
+		activeExperiment = null,
 		onexperimentpause,
 		onexperimentresume,
+		onseek,
 		onexperiments,
 		showExperimentPanel = false
 	}: Props = $props();
@@ -96,9 +102,9 @@
 		onnlcasettings();
 	}
 
-	function openNlcaPlayback() {
+	function openNlcaPrompt() {
 		closeAllPopups();
-		onnlcaplayback();
+		onnlcaprompt();
 	}
 
 	function openNlcaBatchRun() {
@@ -155,9 +161,20 @@
 {/if}
 
 <div class="controls" class:collapsed>
+	{#if activeExperiment && onseek}
+		<div class="scrubber-row">
+			<NlcaFrameScrubber
+				current={activeExperiment.currentGeneration}
+				stored={activeExperiment.progress.current}
+				target={activeExperiment.progress.target}
+				onSeek={onseek}
+			/>
+		</div>
+	{/if}
+	<div class="button-row">
 	<div class="button-group" id="tour-playback-group">
 		{#if experimentActive}
-			<button class="control-btn primary" onclick={() => experimentStatus === 'running' ? onexperimentpause?.() : onexperimentresume?.()} data-tooltip={experimentStatus === 'running' ? 'Pause Experiment' : 'Resume Experiment'}>
+			<button class="control-btn primary" onclick={() => experimentStatus === 'running' ? onexperimentpause?.() : onexperimentresume?.()} data-tooltip={experimentStatus === 'running' ? 'Pause (Enter)' : 'Play / New Experiment (Enter)'}>
 				{#if experimentStatus === 'running'}
 					<svg viewBox="0 0 24 24" fill="currentColor">
 						<rect x="6" y="4" width="4" height="16" rx="1" />
@@ -246,9 +263,10 @@
 			</svg>
 		</button>
 
-		<button class="control-btn" class:active={modalStates.nlcaPlayback.isOpen} onclick={openNlcaPlayback} data-tooltip="Playback" aria-label="Playback">
-			<svg viewBox="0 0 24 24" fill="currentColor">
-				<path d="M12 5a7 7 0 1 1-6.3 4H3l3.5-3.5L10 9H7.7A5 5 0 1 0 12 7v2l3-3-3-3v2z" />
+		<button class="control-btn" class:active={modalStates.nlcaPrompt.isOpen} onclick={openNlcaPrompt} data-tooltip="Prompt" aria-label="Prompt">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+				<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
 			</svg>
 		</button>
 
@@ -309,6 +327,7 @@
 			{/if}
 		</button>
 	</div>
+	</div>
 </div>
 
 <style>
@@ -319,7 +338,8 @@
 		bottom: 18px;
 		transform: translateX(-50%);
 		display: flex;
-		gap: 10px;
+		flex-direction: column;
+		gap: 8px;
 		padding: 10px;
 		background: var(--toolbar-bg);
 		border: 1px solid var(--toolbar-border);
@@ -331,6 +351,17 @@
 	.controls.collapsed {
 		transform: translateX(-50%) translateY(80%);
 		opacity: 0.7;
+	}
+
+	.scrubber-row {
+		padding: 4px 8px 0;
+		display: flex;
+		align-items: center;
+	}
+
+	.button-row {
+		display: flex;
+		gap: 10px;
 	}
 
 	.button-group {
@@ -466,6 +497,8 @@
 			left: 10px;
 			right: 10px;
 			transform: none;
+		}
+		.button-row {
 			justify-content: center;
 			flex-wrap: wrap;
 		}

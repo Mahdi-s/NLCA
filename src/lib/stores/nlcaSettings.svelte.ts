@@ -11,6 +11,7 @@ type NlcaSettingsSnapshot = {
 	neighborhood: NlcaNeighborhood;
 	gridWidth: number;
 	gridHeight: number;
+	targetFrames: number;
 };
 
 const STORAGE_KEYS = {
@@ -23,7 +24,8 @@ const STORAGE_KEYS = {
 	memoryWindow: 'nlca_memory_window',
 	neighborhood: 'nlca_neighborhood',
 	gridWidth: 'nlca_grid_width',
-	gridHeight: 'nlca_grid_height'
+	gridHeight: 'nlca_grid_height',
+	targetFrames: 'nlca_target_frames'
 } as const;
 
 function safeReadStorage(key: string): string | null {
@@ -71,6 +73,7 @@ let memoryWindow = $state(3);
 let neighborhood = $state<NlcaNeighborhood>('moore');
 let gridWidth = $state(10);
 let gridHeight = $state(10);
+let targetFrames = $state(50);
 
 function ensureInitialized() {
 	if (initialized) return;
@@ -96,6 +99,7 @@ function ensureInitialized() {
 	neighborhood = parseNeighborhood(safeReadStorage(STORAGE_KEYS.neighborhood), 'moore');
 	gridWidth = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridWidth) ?? '10'), 8, 512, 10);
 	gridHeight = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridHeight) ?? '10'), 8, 512, 10);
+	targetFrames = clampInt(Number(safeReadStorage(STORAGE_KEYS.targetFrames) ?? '50'), 1, 10000, 50);
 }
 
 export function getNlcaSettingsState() {
@@ -187,6 +191,14 @@ export function getNlcaSettingsState() {
 			safeWriteStorage(STORAGE_KEYS.gridHeight, String(gridHeight));
 		},
 
+		get targetFrames() {
+			return targetFrames;
+		},
+		set targetFrames(value: number) {
+			targetFrames = clampInt(value, 1, 10000, 50);
+			safeWriteStorage(STORAGE_KEYS.targetFrames, String(targetFrames));
+		},
+
 		toJSON(): NlcaSettingsSnapshot {
 			return {
 				apiKey,
@@ -198,7 +210,8 @@ export function getNlcaSettingsState() {
 				memoryWindow,
 				neighborhood,
 				gridWidth,
-				gridHeight
+				gridHeight,
+				targetFrames
 			};
 		}
 	};
