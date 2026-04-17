@@ -24,3 +24,11 @@ vite.config.ts.timestamp-*
 
 # Local git worktrees (used for branch comparisons)
 .worktrees/
+
+# Claude Code — local/session state (do not commit)
+.claude/
+
+# Cursor — version shared rules and checked-in MCP config only
+.cursor/*
+!.cursor/rules/
+!.cursor/mcp.json
