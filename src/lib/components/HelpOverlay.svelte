@@ -5,9 +5,10 @@
 	interface Props {
 		onclose: () => void;
 		onstarttour: () => void;
+		variant?: 'gol' | 'nlca';
 	}
 
-	let { onclose, onstarttour }: Props = $props();
+	let { onclose, onstarttour, variant = 'gol' }: Props = $props();
 
 	// Detect if we're on a touch device
 	const isMobile = typeof window !== 'undefined' && 
@@ -36,6 +37,7 @@
 <div class="help-overlay" role="dialog" aria-modal="true" tabindex="-1">
 	<div 
 		class="help-panel"
+		class:help-panel-nlca={variant === 'nlca'}
 		role="presentation"
 		style="z-index: {modalState.zIndex};"
 		onclick={handleModalClick}
@@ -54,7 +56,9 @@
 					<path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" />
 					<circle cx="12" cy="17" r="0.5" fill="currentColor" />
 				</svg>
-				{isMobile ? 'Touch Controls' : 'Keyboard Shortcuts'}
+				{variant === 'nlca'
+					? 'NLCA Help'
+					: (isMobile ? 'Touch Controls' : 'Keyboard Shortcuts')}
 			</h2>
 			<div class="header-actions">
 				<button class="tour-btn" onclick={handleStartTour}>
@@ -74,7 +78,59 @@
 		</div>
 
 		<div class="help-content">
-			{#if isMobile}
+			{#if variant === 'nlca'}
+				<div class="columns nlca-help">
+					<div class="column">
+						<section class="shortcut-group">
+							<h3>Core Flow</h3>
+							<div class="shortcut"><kbd>1</kbd><span>Pick a <strong>model</strong> and set your OpenRouter key in NLCA Settings.</span></div>
+							<div class="shortcut"><kbd>2</kbd><span>Open <strong>Prompt</strong> in the toolbar and choose or write a task.</span></div>
+							<div class="shortcut"><kbd>3</kbd><span>Press <kbd>Enter</kbd> (or Play) — a new experiment starts and appears in the sidebar.</span></div>
+							<div class="shortcut"><kbd>4</kbd><span>Drag the <strong>frame scrubber</strong> above the toolbar to replay any generation.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Shortcuts</h3>
+							<div class="shortcut"><kbd>Enter</kbd><span>Play / pause / create experiment</span></div>
+							<div class="shortcut"><kbd>E</kbd><span>Toggle experiments sidebar</span></div>
+							<div class="shortcut"><kbd>I</kbd><span>Initialize grid pattern</span></div>
+							<div class="shortcut"><kbd>D</kbd><span>Clear grid</span></div>
+							<div class="shortcut"><kbd>Esc</kbd><span>Close any open panel</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Neighborhoods</h3>
+							<div class="shortcut"><kbd>Moore</kbd><span>8 surrounding cells</span></div>
+							<div class="shortcut"><kbd>VN</kbd><span>Von Neumann — up, down, left, right</span></div>
+							<div class="shortcut"><kbd>Ext</kbd><span>Extended Moore — 5×5 ring (24 cells)</span></div>
+						</section>
+					</div>
+
+					<div class="column">
+						<section class="shortcut-group">
+							<h3>Experiments Sidebar</h3>
+							<div class="shortcut"><kbd>+</kbd><span>Clears selection so the next Play creates a new experiment.</span></div>
+							<div class="shortcut"><kbd>Card</kbd><span>Click any experiment to make it active — canvas + HUD update to show it.</span></div>
+							<div class="shortcut"><kbd>Pause</kbd><span>Each experiment has its own play/pause; the toolbar controls the active one.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>Prompts</h3>
+							<div class="shortcut"><kbd>Task</kbd><span>Plain-English rule the model follows each step. Describe the goal + local heuristics.</span></div>
+							<div class="shortcut"><kbd>Preset</kbd><span>Library of ready-made tasks organised by category.</span></div>
+							<div class="shortcut"><kbd>Adv</kbd><span>Advanced mode exposes the full template with {'{{GRID}}'} and {'{{OUTPUT_CONTRACT}}'} placeholders.</span></div>
+							<div class="shortcut"><kbd>View</kbd><span>Click "View Prompt" in the HUD to see the exact prompt used for the current experiment.</span></div>
+						</section>
+
+						<section class="shortcut-group">
+							<h3>HUD</h3>
+							<div class="shortcut"><kbd>Label</kbd><span>Top row shows the active experiment and its live status.</span></div>
+							<div class="shortcut"><kbd>$</kbd><span>Cost, stored frames, and latency update after every generation.</span></div>
+							<div class="shortcut"><kbd>Run</kbd><span>8-char run ID — each experiment stores its frames to its own local SQLite tape.</span></div>
+						</section>
+					</div>
+				</div>
+			{:else if isMobile}
 				<!-- Mobile Touch Controls -->
 				<div class="touch-controls">
 					<section class="shortcut-group">
@@ -241,6 +297,10 @@
 		will-change: transform;
 	}
 
+	.help-panel.help-panel-nlca {
+		width: min(720px, calc(100vw - 24px));
+	}
+
 	.help-panel:global(.dragging) {
 		box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
 	}
@@ -328,6 +388,22 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 1rem;
+	}
+
+	.nlca-help .shortcut {
+		align-items: flex-start;
+		gap: 0.45rem;
+	}
+
+	.nlca-help .shortcut span {
+		margin-left: 0;
+		flex: 1;
+	}
+
+	@media (max-width: 520px) {
+		.help-panel.help-panel-nlca .columns {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	.shortcut-group {

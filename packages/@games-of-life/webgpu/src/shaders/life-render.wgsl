@@ -39,6 +39,8 @@ struct RenderParams {
 @group(0) @binding(0) var<uniform> params: RenderParams;
 @group(0) @binding(1) var<storage, read> cell_state: array<u32>;
 @group(0) @binding(2) var<storage, read> text_bitmap: array<u32>;
+@group(0) @binding(3) var<storage, read> agent_metrics: array<u32>;
+@group(0) @binding(4) var<storage, read> cell_color: array<u32>;
 
 // Full-screen triangle vertices (oversized triangle that covers entire viewport)
 @vertex
@@ -135,6 +137,140 @@ fn get_cell_state(grid_x: i32, grid_y: i32) -> u32 {
     }
     
     return cell_state[u32(fx) + u32(fy) * u32(params.grid_width)];
+}
+
+// Get per-cell visualization metric (packed u32). Matches boundary transform behavior of get_cell_state().
+fn get_cell_metric(grid_x: i32, grid_y: i32) -> u32 {
+    let w = i32(params.grid_width);
+    let h = i32(params.grid_height);
+    let mode = u32(params.boundary_mode);
+    
+    var fx = grid_x;
+    var fy = grid_y;
+    
+    let wraps_x = mode == 1u || mode == 3u || mode == 4u || mode == 6u || mode == 7u || mode == 8u;
+    let wraps_y = mode == 2u || mode == 3u || mode == 5u || mode == 6u || mode == 7u || mode == 8u;
+    let flips_x = mode == 4u || mode == 6u || mode == 8u;
+    let flips_y = mode == 5u || mode == 7u || mode == 8u;
+    
+    var x_wraps = 0;
+    var y_wraps = 0;
+    
+    if (fx < 0 || fx >= w) {
+        if (!wraps_x) {
+            return 0u;
+        }
+        if (fx < 0) {
+            x_wraps = (-fx - 1) / w + 1;
+            fx = ((fx % w) + w) % w;
+        } else {
+            x_wraps = fx / w;
+            fx = fx % w;
+        }
+    }
+    
+    if (fy < 0 || fy >= h) {
+        if (!wraps_y) {
+            return 0u;
+        }
+        if (fy < 0) {
+            y_wraps = (-fy - 1) / h + 1;
+            fy = ((fy % h) + h) % h;
+        } else {
+            y_wraps = fy / h;
+            fy = fy % h;
+        }
+    }
+    
+    if (flips_x && (x_wraps & 1) == 1) {
+        fy = h - 1 - fy;
+    }
+    if (flips_y && (y_wraps & 1) == 1) {
+        fx = w - 1 - fx;
+    }
+    
+    if (fx < 0 || fx >= w || fy < 0 || fy >= h) {
+        return 0u;
+    }
+    
+    return agent_metrics[u32(fx) + u32(fy) * u32(params.grid_width)];
+}
+
+// Get per-cell packed color (u32). Matches boundary transform behavior of get_cell_state().
+// Packed format:
+// - bits 0..7: B
+// - bits 8..15: G
+// - bits 16..23: R
+// - bits 24..25: status (0=missing, 1=valid, 2=invalid)
+fn get_cell_color_packed(grid_x: i32, grid_y: i32) -> u32 {
+    let w = i32(params.grid_width);
+    let h = i32(params.grid_height);
+    let mode = u32(params.boundary_mode);
+    
+    var fx = grid_x;
+    var fy = grid_y;
+    
+    let wraps_x = mode == 1u || mode == 3u || mode == 4u || mode == 6u || mode == 7u || mode == 8u;
+    let wraps_y = mode == 2u || mode == 3u || mode == 5u || mode == 6u || mode == 7u || mode == 8u;
+    let flips_x = mode == 4u || mode == 6u || mode == 8u;
+    let flips_y = mode == 5u || mode == 7u || mode == 8u;
+    
+    var x_wraps = 0;
+    var y_wraps = 0;
+    
+    if (fx < 0 || fx >= w) {
+        if (!wraps_x) {
+            return 0u;
+        }
+        if (fx < 0) {
+            x_wraps = (-fx - 1) / w + 1;
+            fx = ((fx % w) + w) % w;
+        } else {
+            x_wraps = fx / w;
+            fx = fx % w;
+        }
+    }
+    
+    if (fy < 0 || fy >= h) {
+        if (!wraps_y) {
+            return 0u;
+        }
+        if (fy < 0) {
+            y_wraps = (-fy - 1) / h + 1;
+            fy = ((fy % h) + h) % h;
+        } else {
+            y_wraps = fy / h;
+            fy = fy % h;
+        }
+    }
+    
+    if (flips_x && (x_wraps & 1) == 1) {
+        fy = h - 1 - fy;
+    }
+    if (flips_y && (y_wraps & 1) == 1) {
+        fx = w - 1 - fx;
+    }
+    
+    if (fx < 0 || fx >= w || fy < 0 || fy >= h) {
+        return 0u;
+    }
+    
+    return cell_color[u32(fx) + u32(fy) * u32(params.grid_width)];
+}
+
+fn unpack_cell_color_rgb(packed: u32) -> vec3<f32> {
+    let b = f32(packed & 255u) / 255.0;
+    let g = f32((packed >> 8u) & 255u) / 255.0;
+    let r = f32((packed >> 16u) & 255u) / 255.0;
+    return vec3<f32>(r, g, b);
+}
+
+fn cell_color_status(packed: u32) -> u32 {
+    return (packed >> 24u) & 3u;
+}
+
+fn cell_color_has_rgb(packed: u32) -> bool {
+    return (packed & 0x00ffffffu) != 0u;
 }
 
 // Check if a cell is "alive" (state == 1)
@@ -1184,6 +1320,65 @@ fn hex_boundary_distance(grid_x: f32, grid_y: f32, cell_x: i32, cell_y: i32) -> 
     return (min_neighbor_dist - dist_to_center) * 0.5;
 }
 
+// Get the grid boundary border color (used for plane boundary mode)
+fn get_border_color() -> vec3<f32> {
+    let accent = vec3<f32>(params.alive_r, params.alive_g, params.alive_b);
+    let accent_hsl = rgb_to_hsl(accent);
+    
+    if (params.is_light_theme > 0.5) {
+        // Light theme: darker version of accent
+        let border_hsl = vec3<f32>(accent_hsl.x, accent_hsl.y * 0.7, 0.25);
+        return hsl_to_rgb(border_hsl);
+    }
+    // Dark theme: brighter version of accent
+    let border_hsl = vec3<f32>(accent_hsl.x, accent_hsl.y * 0.8, 0.7);
+    return hsl_to_rgb(border_hsl);
+}
+
+// Check if a position is outside the grid bounds (for plane boundary mode)
+fn is_outside_grid(grid_x: f32, grid_y: f32) -> bool {
+    let mode = u32(params.boundary_mode);
+    // Only applies to plane mode (mode == 0)
+    if (mode != 0u) {
+        return false;
+    }
+    return grid_x < 0.0 || grid_x >= params.grid_width || grid_y < 0.0 || grid_y >= params.grid_height;
+}
+
+// Check if we're at the grid boundary edge (thin line at the edge)
+// Returns a value from 0 to 1 indicating if we should draw the border
+fn get_boundary_intensity(grid_x: f32, grid_y: f32, pixels_per_cell: f32) -> f32 {
+    let mode = u32(params.boundary_mode);
+    
+    // Only draw boundary for plane mode (mode == 0)
+    if (mode != 0u) {
+        return 0.0;
+    }
+    
+    let w = params.grid_width;
+    let h = params.grid_height;
+    
+    // Thin border line thickness (in grid units) - scales with zoom
+    let border_thickness = clamp(2.0 / pixels_per_cell, 0.02, 0.15);
+    
+    // Check if we're exactly at the edge (inside the grid but near border)
+    let near_left = grid_x >= 0.0 && grid_x < border_thickness;
+    let near_right = grid_x < w && grid_x >= w - border_thickness;
+    let near_top = grid_y >= 0.0 && grid_y < border_thickness;
+    let near_bottom = grid_y < h && grid_y >= h - border_thickness;
+    
+    // Only draw if inside the grid
+    if (grid_x < 0.0 || grid_x >= w || grid_y < 0.0 || grid_y >= h) {
+        return 0.0;
+    }
+    
+    if (near_left || near_right || near_top || near_bottom) {
+        return 0.8;
+    }
+    
+    return 0.0;
+}
+
 // Render square grid cells (default)
 fn render_square(input: VertexOutput) -> vec4<f32> {
     // Calculate aspect ratio correction
@@ -1197,6 +1392,11 @@ fn render_square(input: VertexOutput) -> vec4<f32> {
     let grid_x = input.uv.x * cells_visible_x + params.offset_x;
     let grid_y = input.uv.y * cells_visible_y + params.offset_y;
     
+    // For plane boundary mode: return blank background if outside grid
+    if (is_outside_grid(grid_x, grid_y)) {
+        return vec4<f32>(get_bg_color(), 1.0);
+    }
+    
     // Get integer cell coordinates
     let cell_x = i32(floor(grid_x));
     let cell_y = i32(floor(grid_y));
@@ -1204,12 +1404,56 @@ fn render_square(input: VertexOutput) -> vec4<f32> {
     // Get cell state
     let state = get_cell_state(cell_x, cell_y);
     
-    // Base color from state
+    // Base color from state (optionally overridden by per-cell color when alive)
     var color = state_to_color(state, u32(params.num_states));
+    var color_status: u32 = 0u;
+    if (state == 1u) {
+        let packed = get_cell_color_packed(cell_x, cell_y);
+        color_status = cell_color_status(packed);
+        // Prefer per-cell RGB when available, even if status is missing/invalid.
+        // This allows preserving the last known RGB across frames while still tinting with an indicator.
+        if (color_status == 1u || cell_color_has_rgb(packed)) {
+            color = unpack_cell_color_rgb(packed);
+        }
+    }
     
     // Apply neighbor shading if enabled (only for non-dead cells)
     if (state > 0u) {
         color = apply_neighbor_shading(color, cell_x, cell_y);
+    }
+
+    // Agent metrics modulation (render-only):
+    // - faster responses glow brighter
+    // - changed cells get a subtle tint
+    if (state > 0u) {
+        let m = get_cell_metric(cell_x, cell_y);
+        if (m != 0u) {
+            let lat = clamp(f32(m & 255u) / 255.0, 0.0, 1.0); // larger = slower
+            let inv = 1.0 - lat; // larger = faster
+            let glow = inv * 0.28;
+            color = mix(color, vec3<f32>(1.0, 1.0, 1.0), glow);
+            
+            let changed = (m >> 8u) & 1u;
+            if (changed == 1u) {
+                let tint = select(vec3<f32>(0.18, 0.05, 0.18), vec3<f32>(1.0, 0.25, 0.75), params.is_light_theme < 0.5);
+                color = mix(color, tint, 0.12);
+            }
+        }
+    }
+
+    // Subtle per-cell status indicator (missing/invalid), render-only.
+    // Applied only for alive cells to avoid tinting the background.
+    if (state == 1u && (color_status == 0u || color_status == 2u)) {
+        let pixels_per_cell = params.canvas_width / params.zoom;
+        let indicator_thickness = clamp(1.5 / pixels_per_cell, 0.02, 0.12);
+        let frac_x = fract(grid_x);
+        let frac_y = fract(grid_y);
+        let edge = min(min(frac_x, 1.0 - frac_x), min(frac_y, 1.0 - frac_y));
+        let edge_mask = 1.0 - smoothstep(indicator_thickness * 0.5, indicator_thickness, edge);
+
+        let indicator = select(vec3<f32>(0.98, 0.55, 0.55), vec3<f32>(0.98, 0.76, 0.35), color_status == 0u);
+        color = mix(color, indicator, 0.08);
+        color = mix(color, indicator, edge_mask * 0.22);
     }
     
     // Brush preview highlight - subtle semi-transparent overlay
@@ -1242,6 +1486,14 @@ fn render_square(input: VertexOutput) -> vec4<f32> {
                 color = mix(color, get_grid_color(), 0.5);
             }
         }
+    }
+    
+    // Draw grid boundary border for plane mode (no wrapping)
+    let pixels_per_cell_border = params.canvas_width / params.zoom;
+    let boundary_intensity = get_boundary_intensity(grid_x, grid_y, pixels_per_cell_border);
+    if (boundary_intensity > 0.0) {
+        let border_color = get_border_color();
+        color = mix(color, border_color, boundary_intensity * 0.7);
     }
     
     // Draw axis lines - rendered whenever axis_progress > 0 (allows animation even when grid hidden)
@@ -1309,6 +1561,13 @@ fn render_hexagonal(input: VertexOutput) -> vec4<f32> {
     let grid_x = input.uv.x * cells_visible_x + params.offset_x;
     let grid_y = input.uv.y * cells_visible_y + params.offset_y;
     
+    // For plane boundary mode: return blank background if outside grid
+    // For hex grids, use a simple rectangular check (grid_y needs to be converted back to row space)
+    let row_y = grid_y / HEX_HEIGHT_RATIO;
+    if (is_outside_grid(grid_x, row_y)) {
+        return vec4<f32>(get_bg_color(), 1.0);
+    }
+    
     // Convert screen position to hex cell coordinates
     let cell = screen_to_hex_cell(grid_x, grid_y);
     let cell_x = cell.x;
@@ -1317,12 +1576,48 @@ fn render_hexagonal(input: VertexOutput) -> vec4<f32> {
     // Get cell state
     let state = get_cell_state(cell_x, cell_y);
     
-    // Base color from state
+    // Base color from state (optionally overridden by per-cell color when alive)
     var color = state_to_color(state, u32(params.num_states));
+    var color_status: u32 = 0u;
+    if (state == 1u) {
+        let packed = get_cell_color_packed(cell_x, cell_y);
+        color_status = cell_color_status(packed);
+        if (color_status == 1u || cell_color_has_rgb(packed)) {
+            color = unpack_cell_color_rgb(packed);
+        }
+    }
     
     // Apply neighbor shading if enabled (only for non-dead cells)
     if (state > 0u) {
         color = apply_neighbor_shading(color, cell_x, cell_y);
+    }
+
+    // Agent metrics modulation (render-only)
+    if (state > 0u) {
+        let m = get_cell_metric(cell_x, cell_y);
+        if (m != 0u) {
+            let lat = clamp(f32(m & 255u) / 255.0, 0.0, 1.0);
+            let inv = 1.0 - lat;
+            let glow = inv * 0.28;
+            color = mix(color, vec3<f32>(1.0, 1.0, 1.0), glow);
+            let changed = (m >> 8u) & 1u;
+            if (changed == 1u) {
+                let tint = select(vec3<f32>(0.18, 0.05, 0.18), vec3<f32>(1.0, 0.25, 0.75), params.is_light_theme < 0.5);
+                color = mix(color, tint, 0.12);
+            }
+        }
+    }
+
+    // Subtle per-cell status indicator (missing/invalid), render-only.
+    if (state == 1u && (color_status == 0u || color_status == 2u)) {
+        let pixels_per_cell = params.canvas_width / params.zoom;
+        let indicator_thickness = clamp(1.5 / pixels_per_cell, 0.02, 0.12);
+        let boundary_dist = hex_boundary_distance(grid_x, grid_y, cell_x, cell_y);
+        let edge_mask = 1.0 - smoothstep(indicator_thickness * 0.5, indicator_thickness, boundary_dist);
+
+        let indicator = select(vec3<f32>(0.98, 0.55, 0.55), vec3<f32>(0.98, 0.76, 0.35), color_status == 0u);
+        color = mix(color, indicator, 0.08);
+        color = mix(color, indicator, edge_mask * 0.22);
     }
     
     // Brush preview highlight

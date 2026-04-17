@@ -1,8 +1,7 @@
 <script lang="ts">
 	import './layout.css';
-	import MainApp from '$lib/components/MainApp.svelte';
-	import { getSimulationState, DARK_THEME_COLORS, LIGHT_THEME_COLORS } from '$lib/stores/simulation.svelte.js';
-	
+	import { getSimulationState } from '$lib/stores/simulation.svelte.js';
+
 	let { children } = $props();
 	const simState = getSimulationState();
 
@@ -100,8 +99,9 @@
 		return `rgba(255, 255, 255, 0.1)`;
 	});
 
-	const siteTitle = 'Games of Life — WebGPU Cellular Automata';
-	const siteDescription = 'GPU-accelerated cellular automata playground with hex and square grids, multi-state rules, and vivid spectra.';
+	const siteTitle = 'NLCA — Natural Language Cellular Automata';
+	const siteDescription =
+		'Cellular automata with language-model rules: write a task in English and watch each cell decide its next state.';
 	const thumbnailUrl = 'https://neovand.github.io/games-of-life/thumbnail.jpg';
 </script>
 
@@ -114,7 +114,7 @@
 	<meta property="og:title" content={siteTitle} />
 	<meta property="og:description" content={siteDescription} />
 	<meta property="og:image" content={thumbnailUrl} />
-	<meta property="og:image:alt" content="Colorful hexagonal cellular automaton pattern" />
+	<meta property="og:image:alt" content="Natural Language Cellular Automata" />
 
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image" />
@@ -123,13 +123,11 @@
 	<meta name="twitter:image" content={thumbnailUrl} />
 </svelte:head>
 
-<div 
-	class="root-layout" 
+<div
+	class="root-layout"
 	class:light-theme={simState.isLightTheme}
 	style="--ui-accent: {accentColor}; --ui-accent-bg: {accentColorBg}; --ui-accent-border: {accentColorBorder}; --ui-accent-bg-hover: {accentColorBgHover}; --toolbar-bg: {toolbarBg}; --toolbar-border: {toolbarBorder}; --btn-bg: {btnBg}; --btn-bg-hover: {btnBgHover}; --btn-bg-active: {btnBgActive}; --group-bg: {groupBg}; --group-border: {groupBorder}; --group-bg-hover: {groupBgHover}; --group-border-hover: {groupBorderHover};"
 >
-	<MainApp />
-
 	{@render children()}
 </div>
 

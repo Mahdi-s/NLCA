@@ -91,6 +91,12 @@ export class Simulation {
 	private readbackBuffer!: GPUBuffer;
 	private textBitmapBuffer!: GPUBuffer;
 	private vitalityCurveBuffer!: GPUBuffer;
+	/** Optional per-cell metrics used for visualization (e.g., NLCA latency / changed). */
+	private agentMetricsBuffer!: GPUBuffer;
+	private agentMetricsStaging: Uint32Array | null = null;
+	/** Optional per-cell colors used for visualization (render-only). Packed u32 per cell. */
+	private cellColorBuffer!: GPUBuffer;
+	private cellColorStaging: Uint32Array | null = null;
 
 	// Text bitmap state
 	private textBitmapWidth = 0;
@@ -223,6 +229,16 @@ export class Simulation {
 					binding: 2,
 					visibility: GPUShaderStage.FRAGMENT,
 					buffer: { type: 'read-only-storage' }
+				},
+				{
+					binding: 3,
+					visibility: GPUShaderStage.FRAGMENT,
+					buffer: { type: 'read-only-storage' }
+				},
+				{
+					binding: 4,
+					visibility: GPUShaderStage.FRAGMENT,
+					buffer: { type: 'read-only-storage' }
 				}
 			]
 		});
@@ -302,6 +318,35 @@ export class Simulation {
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
 		});
 
+		// Agent metrics buffer - u32 per cell (render-only).
+		// Packed format (u32):
+		// - bits 0..7: latency bucket (0..255)
+		// - bit 8: changed flag
+		// - remaining bits unused
+		this.agentMetricsBuffer = this.device.createBuffer({
+			label: 'Agent Metrics Buffer',
+			size: cellBufferSize,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+		});
+		// Ensure we always have an ArrayBuffer-backed view (not SharedArrayBuffer) for WebGPU typings.
+		this.agentMetricsStaging = new Uint32Array(new ArrayBuffer(cellCount * 4));
+		this.device.queue.writeBuffer(this.agentMetricsBuffer, 0, this.agentMetricsStaging as unknown as Uint32Array<ArrayBuffer>);
+
+		// Cell colors buffer - u32 per cell (render-only).
+		// Packed format (u32):
+		// - bits 0..7: B
+		// - bits 8..15: G
+		// - bits 16..23: R
+		// - bits 24..25: status (0=missing, 1=valid, 2=invalid)
+		this.cellColorBuffer = this.device.createBuffer({
+			label: 'Cell Color Buffer',
+			size: cellBufferSize,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+		});
+		// Ensure we always have an ArrayBuffer-backed view (not SharedArrayBuffer) for WebGPU typings.
+		this.cellColorStaging = new Uint32Array(new ArrayBuffer(cellCount * 4));
+		this.device.queue.writeBuffer(this.cellColorBuffer, 0, this.cellColorStaging as unknown as Uint32Array<ArrayBuffer>);
+
 		// Initialize with current rule
 		this.updateComputeParams();
 	}
@@ -338,7 +383,9 @@ export class Simulation {
 				entries: [
 					{ binding: 0, resource: { buffer: this.renderParamsBuffer } },
 					{ binding: 1, resource: { buffer: this.cellBuffers[0] } },
-					{ binding: 2, resource: { buffer: this.textBitmapBuffer } }
+					{ binding: 2, resource: { buffer: this.textBitmapBuffer } },
+					{ binding: 3, resource: { buffer: this.agentMetricsBuffer } },
+					{ binding: 4, resource: { buffer: this.cellColorBuffer } }
 				]
 			}),
 			this.device.createBindGroup({
@@ -347,10 +394,60 @@ export class Simulation {
 				entries: [
 					{ binding: 0, resource: { buffer: this.renderParamsBuffer } },
 					{ binding: 1, resource: { buffer: this.cellBuffers[1] } },
-					{ binding: 2, resource: { buffer: this.textBitmapBuffer } }
+					{ binding: 2, resource: { buffer: this.textBitmapBuffer } },
+					{ binding: 3, resource: { buffer: this.agentMetricsBuffer } },
+					{ binding: 4, resource: { buffer: this.cellColorBuffer } }
 				]
 			})
 		];
+	}
+
+	/**
+	 * Update per-cell agent metrics for visualization.
+	 *
+	 * This does NOT affect simulation stepping; it only modulates render shading.
+	 */
+	setAgentMetrics(latency8: Uint8Array, changed01?: Uint8Array): void {
+		const cellCount = this.width * this.height;
+		if (!this.agentMetricsStaging) return;
+		if (latency8.length !== cellCount) return;
+		if (changed01 && changed01.length !== cellCount) return;
+
+		for (let i = 0; i < cellCount; i++) {
+			const lat = latency8[i] ?? 0;
+			const ch = changed01 ? (changed01[i] ? 1 : 0) : 0;
+			this.agentMetricsStaging[i] = (lat & 0xff) | ((ch & 1) << 8);
+		}
+		this.device.queue.writeBuffer(this.agentMetricsBuffer, 0, this.agentMetricsStaging as unknown as Uint32Array<ArrayBuffer>);
+	}
+
+	clearAgentMetrics(): void {
+		if (!this.agentMetricsStaging) return;
+		this.agentMetricsStaging.fill(0);
+		this.device.queue.writeBuffer(this.agentMetricsBuffer, 0, this.agentMetricsStaging as unknown as Uint32Array<ArrayBuffer>);
+	}
+
+	/**
+	 * Update per-cell colors for visualization (render-only).
+	 *
+	 * Packed u32 per cell:
+	 * - bits 0..7: B
+	 * - bits 8..15: G
+	 * - bits 16..23: R
+	 * - bits 24..25: status (0=missing, 1=valid, 2=invalid)
+	 */
+	setCellColorsPacked(colors: Uint32Array): void {
+		const cellCount = this.width * this.height;
+		if (!this.cellColorStaging) return;
+		if (colors.length !== cellCount) return;
+		this.cellColorStaging.set(colors);
+		this.device.queue.writeBuffer(this.cellColorBuffer, 0, this.cellColorStaging as unknown as Uint32Array<ArrayBuffer>);
+	}
+
+	clearCellColors(): void {
+		if (!this.cellColorStaging) return;
+		this.cellColorStaging.fill(0);
+		this.device.queue.writeBuffer(this.cellColorBuffer, 0, this.cellColorStaging as unknown as Uint32Array<ArrayBuffer>);
 	}
 
 	private getNeighborhoodIndex(): number {
@@ -1248,6 +1345,8 @@ export class Simulation {
 		this.device.queue.writeBuffer(this.cellBuffers[1], 0, zeros);
 		this.pendingPaints.clear();
 		this._aliveCells = 0;
+		this.clearAgentMetrics();
+		this.clearCellColors();
 	}
 
 	/**
@@ -1294,6 +1393,7 @@ export class Simulation {
 		const currentBuffer = this.cellBuffers[this.stepCount % 2];
 		this.device.queue.writeBuffer(currentBuffer, 0, data);
 		this.pendingPaints.clear();
+		this.clearAgentMetrics();
 	}
 
 	/**
@@ -1354,7 +1454,7 @@ export class Simulation {
 	 * Alive cells count - tracked during operations
 	 */
 	private _aliveCells = 0;
-	private _isCountingCells = false;
+	private _countingCellsPromise: Promise<number> | null = null;
 
 	countAliveCells(): number {
 		return this._aliveCells;
@@ -1370,35 +1470,44 @@ export class Simulation {
 	/**
 	 * Async method to read back cell data from GPU and count alive cells
 	 * Call this when paused to get accurate count
+	 * Queues concurrent calls to prevent multiple mapAsync operations
 	 */
 	async countAliveCellsAsync(): Promise<number> {
-		if (this._isCountingCells) return this._aliveCells;
-		this._isCountingCells = true;
-
-		try {
-			const currentBuffer = this.cellBuffers[this.stepCount % 2];
-			const bufferSize = this.width * this.height * 4;
-
-			// Copy current cell buffer to readback buffer
-			const commandEncoder = this.device.createCommandEncoder();
-			commandEncoder.copyBufferToBuffer(currentBuffer, 0, this.readbackBuffer, 0, bufferSize);
-			this.device.queue.submit([commandEncoder.finish()]);
-
-			// Map the readback buffer and count alive cells
-			await this.readbackBuffer.mapAsync(GPUMapMode.READ);
-			const data = new Uint32Array(this.readbackBuffer.getMappedRange());
-			
-			let count = 0;
-			for (let i = 0; i < data.length; i++) {
-				if (data[i] === 1) count++;
-			}
-			
-			this.readbackBuffer.unmap();
-			this._aliveCells = count;
-			return count;
-		} finally {
-			this._isCountingCells = false;
+		// If there's already a counting operation in progress, wait for it
+		if (this._countingCellsPromise) {
+			return this._countingCellsPromise;
 		}
+
+		// Start a new counting operation
+		this._countingCellsPromise = (async () => {
+			try {
+				const currentBuffer = this.cellBuffers[this.stepCount % 2];
+				const bufferSize = this.width * this.height * 4;
+
+				// Copy current cell buffer to readback buffer
+				const commandEncoder = this.device.createCommandEncoder();
+				commandEncoder.copyBufferToBuffer(currentBuffer, 0, this.readbackBuffer, 0, bufferSize);
+				this.device.queue.submit([commandEncoder.finish()]);
+
+				// Map the readback buffer and count alive cells
+				await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+				const data = new Uint32Array(this.readbackBuffer.getMappedRange());
+				
+				let count = 0;
+				for (let i = 0; i < data.length; i++) {
+					if (data[i] === 1) count++;
+				}
+				
+				this.readbackBuffer.unmap();
+				this._aliveCells = count;
+				return count;
+			} finally {
+				// Clear the promise so new calls can start
+				this._countingCellsPromise = null;
+			}
+		})();
+
+		return this._countingCellsPromise;
 	}
 
 	/**
@@ -1455,6 +1564,7 @@ export class Simulation {
 		const currentBuffer = this.cellBuffers[this.stepCount % 2];
 		this.device.queue.writeBuffer(currentBuffer, 0, data.buffer as ArrayBuffer);
 		this.pendingPaints.clear();
+		this.clearAgentMetrics();
 		
 		// Update alive count
 		let count = 0;
@@ -1903,6 +2013,8 @@ export class Simulation {
 		this.readbackBuffer.destroy();
 		this.textBitmapBuffer.destroy();
 		this.vitalityCurveBuffer.destroy();
+		this.agentMetricsBuffer.destroy();
+		this.cellColorBuffer.destroy();
 	}
 }
 

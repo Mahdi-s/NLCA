@@ -3,7 +3,19 @@
  * Manages multiple draggable modals with position persistence and z-index management
  */
 
-export type ModalId = 'ruleEditor' | 'initialize' | 'about' | 'settings' | 'help' | 'brushEditor' | 'historyTimeline' | 'audio';
+export type ModalId =
+	| 'ruleEditor'
+	| 'initialize'
+	| 'about'
+	| 'settings'
+	| 'help'
+	| 'brushEditor'
+	| 'historyTimeline'
+	| 'audio'
+	| 'nlcaSettings'
+	| 'nlcaPrompt'
+	| 'nlcaPromptViewer'
+	| 'nlcaBatchRun';
 
 export interface ModalState {
 	isOpen: boolean;
@@ -23,7 +35,11 @@ const modalStates = $state<Record<ModalId, ModalState>>({
 	help: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	brushEditor: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	historyTimeline: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
-	audio: { isOpen: false, position: null, zIndex: BASE_Z_INDEX }
+	audio: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaSettings: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaPrompt: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaPromptViewer: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaBatchRun: { isOpen: false, position: null, zIndex: BASE_Z_INDEX }
 });
 
 // Track the highest z-index used

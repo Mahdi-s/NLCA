@@ -13,7 +13,9 @@ const config = {
 			assets: 'build',
 			fallback: '404.html',
 			precompress: false,
-			strict: true
+			// Allow dev-only server endpoints (OpenRouter proxy) to exist in the repo
+			// without breaking static builds. These endpoints will not be available on GitHub Pages.
+			strict: false
 		}),
 		paths: {
 			base: process.env.NODE_ENV === 'production' ? '/games-of-life' : ''
