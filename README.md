@@ -2,10 +2,6 @@
 
 **NLCA** replaces the hand-coded rule of a cellular automaton with a language model. Instead of writing `B3/S23`, you write *"cells survive when they have exactly 2 or 3 live neighbors"* — and the LLM decides each cell's next state, live.
 
-<p align="center">
-  <img src="static/thumbnail.jpg" alt="NLCA — Natural Language Cellular Automata" />
-</p>
-
 ![Svelte](https://img.shields.io/badge/Svelte-5-ff3e00?style=flat&logo=svelte)
 ![WebGPU](https://img.shields.io/badge/WebGPU-Compute-blue?style=flat)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
