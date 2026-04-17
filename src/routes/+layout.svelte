@@ -1,14 +1,9 @@
 <script lang="ts">
 	import './layout.css';
-	import MainApp from '$lib/components/MainApp.svelte';
-	import MainAppNlca from '$lib/components/MainAppNlca.svelte';
-	import { page } from '$app/stores';
-	import { getSimulationState, DARK_THEME_COLORS, LIGHT_THEME_COLORS } from '$lib/stores/simulation.svelte.js';
-	
+	import { getSimulationState } from '$lib/stores/simulation.svelte.js';
+
 	let { children } = $props();
 	const simState = getSimulationState();
-
-	const isNlca = $derived($page.url.pathname.startsWith('/nlca'));
 
 	// Convert alive color (0-1 RGB) to CSS color strings
 	const accentColor = $derived.by(() => {
@@ -104,8 +99,9 @@
 		return `rgba(255, 255, 255, 0.1)`;
 	});
 
-	const siteTitle = 'Games of Life — WebGPU Cellular Automata';
-	const siteDescription = 'GPU-accelerated cellular automata playground with hex and square grids, multi-state rules, and vivid spectra.';
+	const siteTitle = 'NLCA — Neural Life Cellular Automata';
+	const siteDescription =
+		'LLM-powered cellular automaton: each cell’s next state is decided by an AI agent.';
 	const thumbnailUrl = 'https://neovand.github.io/games-of-life/thumbnail.jpg';
 </script>
 
@@ -118,7 +114,7 @@
 	<meta property="og:title" content={siteTitle} />
 	<meta property="og:description" content={siteDescription} />
 	<meta property="og:image" content={thumbnailUrl} />
-	<meta property="og:image:alt" content="Colorful hexagonal cellular automaton pattern" />
+	<meta property="og:image:alt" content="Neural Life Cellular Automata" />
 
 	<!-- Twitter -->
 	<meta name="twitter:card" content="summary_large_image" />
@@ -127,17 +123,11 @@
 	<meta name="twitter:image" content={thumbnailUrl} />
 </svelte:head>
 
-<div 
-	class="root-layout" 
+<div
+	class="root-layout"
 	class:light-theme={simState.isLightTheme}
 	style="--ui-accent: {accentColor}; --ui-accent-bg: {accentColorBg}; --ui-accent-border: {accentColorBorder}; --ui-accent-bg-hover: {accentColorBgHover}; --toolbar-bg: {toolbarBg}; --toolbar-border: {toolbarBorder}; --btn-bg: {btnBg}; --btn-bg-hover: {btnBgHover}; --btn-bg-active: {btnBgActive}; --group-bg: {groupBg}; --group-border: {groupBorder}; --group-bg-hover: {groupBgHover}; --group-border-hover: {groupBorderHover};"
 >
-	{#if isNlca}
-		<MainAppNlca />
-	{:else}
-		<MainApp />
-	{/if}
-
 	{@render children()}
 </div>
 
