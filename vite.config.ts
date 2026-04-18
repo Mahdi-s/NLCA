@@ -10,7 +10,7 @@ export default defineConfig({
 	// raw `.ts` (which causes ERR_UNKNOWN_FILE_EXTENSION).
 	ssr: {
 		noExternal: ['@games-of-life/core', '@games-of-life/webgpu', '@games-of-life/svelte', '@games-of-life/audio'],
-		external: ['@sqlite.org/sqlite-wasm']
+		external: ['@sqlite.org/sqlite-wasm', 'better-sqlite3']
 	},
 	resolve: {
 		// Prefer browser exports over Node.js exports

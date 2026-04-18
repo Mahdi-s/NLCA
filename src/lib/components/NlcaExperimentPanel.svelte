@@ -64,6 +64,9 @@
 					<span class="exp-label">{exp.label}</span>
 				</div>
 				<div class="exp-meta">
+					<span class="provider-tag provider-{exp.config.apiProvider ?? 'openrouter'}">
+						{exp.config.apiProvider === 'sambanova' ? 'SambaNova' : 'OpenRouter'}
+					</span>
 					<span>{exp.config.gridWidth}×{exp.config.gridHeight}</span>
 					<span>{exp.progress.current}/{exp.progress.target}</span>
 					<span>{formatTime(exp.createdAt)}</span>
@@ -232,6 +235,23 @@
 		font-size: 10px;
 		color: var(--ui-text, #888);
 		font-variant-numeric: tabular-nums;
+		align-items: center;
+	}
+	.provider-tag {
+		font-size: 9px;
+		font-weight: 600;
+		padding: 1px 5px;
+		border-radius: 3px;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+	}
+	.provider-openrouter {
+		background: rgba(96 165 250 / 0.15);
+		color: #93c5fd;
+	}
+	.provider-sambanova {
+		background: rgba(251 191 36 / 0.15);
+		color: #fcd34d;
 	}
 
 	.exp-error {

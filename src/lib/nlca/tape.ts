@@ -1,15 +1,136 @@
+import { dev } from '$app/environment';
 import type { NlcaCellMetricsFrame, NlcaRunConfig, ExperimentMeta, ExperimentConfig } from './types.js';
-// Lazy import to avoid SSR issues - only loaded when getSqlite3 is called
-let getSqlite3: (() => Promise<any>) | null = null;
-let isCrossOriginIsolated: (() => boolean) | null = null;
 
-async function ensureSqlite() {
-	if (!getSqlite3 || !isCrossOriginIsolated) {
-		const sqliteModule = await import('./sqlite.js');
-		getSqlite3 = sqliteModule.getSqlite3;
-		isCrossOriginIsolated = sqliteModule.isCrossOriginIsolated;
+// ---------------------------------------------------------------------------
+// DbHandle abstraction — synchronous sqlite-wasm vs. HTTP-proxied server DB
+// ---------------------------------------------------------------------------
+
+type SqlValue = string | number | null | Uint8Array;
+
+interface DbHandle {
+	exec(sql: string): Promise<void>;
+	run(sql: string, bind: SqlValue[]): Promise<void>;
+	all(sql: string, bind?: SqlValue[]): Promise<SqlValue[][]>;
+	get(sql: string, bind?: SqlValue[]): Promise<SqlValue[] | null>;
+}
+
+/** Wraps the synchronous sqlite-wasm OO1 DB in the async DbHandle interface. */
+class BrowserDbHandle implements DbHandle {
+	constructor(private db: any) {}
+
+	async exec(sql: string): Promise<void> {
+		this.db.exec(sql);
+	}
+	async run(sql: string, bind: SqlValue[]): Promise<void> {
+		this.db.exec({ sql, bind });
+	}
+	async all(sql: string, bind?: SqlValue[]): Promise<SqlValue[][]> {
+		const stmt = this.db.prepare(sql);
+		try {
+			if (bind?.length) stmt.bind(bind);
+			const rows: SqlValue[][] = [];
+			while (stmt.step()) rows.push(stmt.get([]) as SqlValue[]);
+			return rows;
+		} finally {
+			stmt.finalize();
+		}
+	}
+	async get(sql: string, bind?: SqlValue[]): Promise<SqlValue[] | null> {
+		const stmt = this.db.prepare(sql);
+		try {
+			if (bind?.length) stmt.bind(bind);
+			if (!stmt.step()) return null;
+			return stmt.get([]) as SqlValue[];
+		} finally {
+			stmt.finalize();
+		}
 	}
 }
+
+type RawValue = string | number | null | { __b64: string };
+
+function encodeBindValue(v: SqlValue): RawValue {
+	if (v instanceof Uint8Array) {
+		let bin = '';
+		for (let i = 0; i < v.length; i++) bin += String.fromCharCode(v[i]);
+		return { __b64: btoa(bin) };
+	}
+	return v;
+}
+
+function decodeResultValue(v: RawValue): SqlValue {
+	if (v && typeof v === 'object' && '__b64' in v) {
+		const bin = atob(v.__b64);
+		const arr = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+		return arr;
+	}
+	return v as SqlValue;
+}
+
+/** Proxies all DB operations to the /api/nlca-db SvelteKit server route (dev only). */
+class ServerDbHandle implements DbHandle {
+	constructor(private dbPath: string) {}
+
+	private async call(op: string, extra?: object): Promise<any> {
+		const res = await fetch('/api/nlca-db', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ dbPath: this.dbPath, op, ...extra })
+		});
+		if (!res.ok) throw new Error(`[nlca-db] ${op} ${this.dbPath}: ${await res.text()}`);
+		return res.json();
+	}
+
+	async exec(sql: string): Promise<void> {
+		await this.call('exec', { sql });
+	}
+	async run(sql: string, bind: SqlValue[]): Promise<void> {
+		await this.call('run', { sql, bind: bind.map(encodeBindValue) });
+	}
+	async all(sql: string, bind?: SqlValue[]): Promise<SqlValue[][]> {
+		const { rows } = await this.call('all', { sql, bind: (bind ?? []).map(encodeBindValue) });
+		return (rows as RawValue[][]).map((r) => r.map(decodeResultValue));
+	}
+	async get(sql: string, bind?: SqlValue[]): Promise<SqlValue[] | null> {
+		const { row } = await this.call('get', { sql, bind: (bind ?? []).map(encodeBindValue) });
+		return row ? (row as RawValue[]).map(decodeResultValue) : null;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lazy import of browser-side sqlite (SSR-safe)
+// ---------------------------------------------------------------------------
+let _getSqlite3: (() => Promise<any>) | null = null;
+let _isCrossOriginIsolated: (() => boolean) | null = null;
+
+async function ensureSqlite() {
+	if (!_getSqlite3 || !_isCrossOriginIsolated) {
+		const m = await import('./sqlite.js');
+		_getSqlite3 = m.getSqlite3;
+		_isCrossOriginIsolated = m.isCrossOriginIsolated;
+	}
+}
+
+async function makeBrowserHandle(dbPath: string): Promise<BrowserDbHandle> {
+	await ensureSqlite();
+	const sqlite3 = await _getSqlite3!();
+	let rawDb: any;
+	try {
+		if (_isCrossOriginIsolated!() && 'opfs' in sqlite3 && sqlite3.oo1?.OpfsDb) {
+			rawDb = new sqlite3.oo1.OpfsDb(dbPath);
+		} else {
+			rawDb = new sqlite3.oo1.DB(dbPath, 'ct');
+		}
+	} catch {
+		rawDb = new sqlite3.oo1.DB(dbPath, 'ct');
+	}
+	return new BrowserDbHandle(rawDb);
+}
+
+// ---------------------------------------------------------------------------
+// Utility pack/unpack helpers (exported for use in experimentManager)
+// ---------------------------------------------------------------------------
 
 export interface NlcaTapeFrame {
 	runId: string;
@@ -39,9 +160,6 @@ export function unpackBitsetTo01(bits: Uint8Array, nCells: number): Uint32Array 
 }
 
 export function encodeMetrics(metrics: NlcaCellMetricsFrame): Uint8Array {
-	// Simple packed layout:
-	// [0..n-1] latency8
-	// [n..2n-1] changed01
 	const n = metrics.latency8.length;
 	const out = new Uint8Array(n * 2);
 	out.set(metrics.latency8, 0);
@@ -57,8 +175,12 @@ export function decodeMetrics(metricsBlob: Uint8Array, nCells: number): NlcaCell
 	};
 }
 
+// ---------------------------------------------------------------------------
+// NlcaTape
+// ---------------------------------------------------------------------------
+
 export class NlcaTape {
-	private db: any | null = null;
+	private db: DbHandle | null = null;
 	private ready = false;
 	private dbPath: string;
 
@@ -68,33 +190,14 @@ export class NlcaTape {
 
 	async init(): Promise<void> {
 		if (this.ready) return;
-
-		await ensureSqlite();
-		if (!getSqlite3 || !isCrossOriginIsolated) {
-			throw new Error('SQLite module not available');
-		}
-
-		const sqlite3 = await getSqlite3();
-		// Prefer OPFS if available + crossOriginIsolated, otherwise fall back to transient DB.
-		try {
-			if (isCrossOriginIsolated() && 'opfs' in sqlite3 && sqlite3.oo1?.OpfsDb) {
-				this.db = new sqlite3.oo1.OpfsDb(this.dbPath);
-			} else {
-				this.db = new sqlite3.oo1.DB(this.dbPath, 'ct');
-			}
-		} catch {
-			// Last resort: transient DB.
-			this.db = new sqlite3.oo1.DB(this.dbPath, 'ct');
-		}
-
-		this.migrate();
+		this.db = dev ? new ServerDbHandle(this.dbPath) : await makeBrowserHandle(this.dbPath);
+		await this.migrate();
 		this.ready = true;
 	}
 
-	private migrate(): void {
+	private async migrate(): Promise<void> {
 		if (!this.db) return;
-
-		this.db.exec(
+		await this.db.exec(
 			[
 				`CREATE TABLE IF NOT EXISTS nlca_runs (`,
 				`  run_id TEXT PRIMARY KEY,`,
@@ -119,23 +222,26 @@ export class NlcaTape {
 				`CREATE INDEX IF NOT EXISTS idx_nlca_frames_run_gen ON nlca_frames(run_id, generation);`
 			].join('\n')
 		);
-		// Add config_json column if upgrading from older schema
 		try {
-			this.db.exec(`ALTER TABLE nlca_runs ADD COLUMN config_json TEXT`);
+			await this.db.exec(`ALTER TABLE nlca_runs ADD COLUMN config_json TEXT`);
 		} catch {
 			// Column already exists — ignore
 		}
 	}
 
-	async startRun(cfg: Omit<NlcaRunConfig, 'createdAt'> & { createdAt?: number; configJson?: string }): Promise<string> {
+	async startRun(
+		cfg: Omit<NlcaRunConfig, 'createdAt'> & { createdAt?: number; configJson?: string }
+	): Promise<string> {
 		await this.init();
 		const runId = cfg.runId;
 		const createdAt = cfg.createdAt ?? Date.now();
-		console.log(`[NLCA] Starting run ${runId}: ${cfg.width}x${cfg.height}, model: ${cfg.model}, concurrency: ${cfg.maxConcurrency}`);
-		this.db.exec({
-			sql: `INSERT OR REPLACE INTO nlca_runs(run_id, created_at, width, height, neighborhood, model, max_concurrency, seed, notes, config_json)
-			      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			bind: [
+		console.log(
+			`[NLCA] Starting run ${runId}: ${cfg.width}x${cfg.height}, model: ${cfg.model}, concurrency: ${cfg.maxConcurrency}`
+		);
+		await this.db!.run(
+			`INSERT OR REPLACE INTO nlca_runs(run_id, created_at, width, height, neighborhood, model, max_concurrency, seed, notes, config_json)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
 				runId,
 				createdAt,
 				cfg.width,
@@ -147,112 +253,80 @@ export class NlcaTape {
 				cfg.notes ?? null,
 				cfg.configJson ?? null
 			]
-		});
+		);
 		return runId;
 	}
 
 	async appendFrame(frame: NlcaTapeFrame): Promise<void> {
 		await this.init();
-		this.db.exec({
-			sql: `INSERT OR REPLACE INTO nlca_frames(run_id, generation, created_at, state_bits, metrics)
-			      VALUES(?, ?, ?, ?, ?)`,
-			bind: [frame.runId, frame.generation, frame.createdAt, frame.stateBits, frame.metrics ?? null]
-		});
+		await this.db!.run(
+			`INSERT OR REPLACE INTO nlca_frames(run_id, generation, created_at, state_bits, metrics)
+			 VALUES(?, ?, ?, ?, ?)`,
+			[frame.runId, frame.generation, frame.createdAt, frame.stateBits, frame.metrics ?? null]
+		);
 	}
 
 	async getFrame(runId: string, generation: number): Promise<NlcaTapeFrame | null> {
 		await this.init();
-		const stmt = this.db.prepare(
-			`SELECT created_at, state_bits, metrics FROM nlca_frames WHERE run_id = ? AND generation = ?`
+		const row = await this.db!.get(
+			`SELECT created_at, state_bits, metrics FROM nlca_frames WHERE run_id = ? AND generation = ?`,
+			[runId, generation]
 		);
-		try {
-			stmt.bind([runId, generation]);
-			if (!stmt.step()) return null;
-			const row = stmt.get([]) as any[];
-			const createdAt = Number(row[0] ?? 0);
-			const stateBits = row[1] as Uint8Array;
-			const metrics = row[2] ? (row[2] as Uint8Array) : undefined;
-			return { runId, generation, createdAt, stateBits, metrics };
-		} finally {
-			stmt.finalize();
-		}
+		if (!row) return null;
+		const createdAt = Number(row[0] ?? 0);
+		const stateBits = row[1] as Uint8Array;
+		const metrics = row[2] instanceof Uint8Array ? row[2] : undefined;
+		return { runId, generation, createdAt, stateBits, metrics };
 	}
 
 	async getLatestGeneration(runId: string): Promise<number> {
 		await this.init();
-		const stmt = this.db.prepare(`SELECT MAX(generation) FROM nlca_frames WHERE run_id = ?`);
-		try {
-			stmt.bind([runId]);
-			if (!stmt.step()) return 0;
-			const v = stmt.get(0) as any;
-			return typeof v === 'number' ? v : v ? Number(v) : 0;
-		} finally {
-			stmt.finalize();
-		}
+		const row = await this.db!.get(`SELECT MAX(generation) FROM nlca_frames WHERE run_id = ?`, [
+			runId
+		]);
+		if (!row) return 0;
+		const v = row[0];
+		return typeof v === 'number' ? v : v ? Number(v) : 0;
 	}
 
 	async listRuns(): Promise<NlcaRunConfig[]> {
 		await this.init();
-		const runs: NlcaRunConfig[] = [];
-		const stmt = this.db.prepare(
+		const rows = await this.db!.all(
 			`SELECT run_id, created_at, width, height, neighborhood, model, max_concurrency, seed, notes FROM nlca_runs ORDER BY created_at DESC`
 		);
-		try {
-			while (stmt.step()) {
-				const row = stmt.get([]) as any[];
-				runs.push({
-					runId: String(row[0]),
-					createdAt: Number(row[1]),
-					width: Number(row[2]),
-					height: Number(row[3]),
-					neighborhood: row[4],
-					model: String(row[5]),
-					maxConcurrency: Number(row[6]),
-					seed: row[7] ? String(row[7]) : undefined,
-					notes: row[8] ? String(row[8]) : undefined
-				});
-			}
-		} finally {
-			stmt.finalize();
-		}
-		return runs;
+		return rows.map((row) => ({
+			runId: String(row[0]),
+			createdAt: Number(row[1]),
+			width: Number(row[2]),
+			height: Number(row[3]),
+			neighborhood: row[4] as any,
+			model: String(row[5]),
+			maxConcurrency: Number(row[6]),
+			seed: row[7] ? String(row[7]) : undefined,
+			notes: row[8] ? String(row[8]) : undefined
+		}));
 	}
 
 	async deleteRun(runId: string): Promise<void> {
 		await this.init();
-		this.db.exec({ sql: `DELETE FROM nlca_frames WHERE run_id = ?`, bind: [runId] });
-		this.db.exec({ sql: `DELETE FROM nlca_runs WHERE run_id = ?`, bind: [runId] });
+		await this.db!.run(`DELETE FROM nlca_frames WHERE run_id = ?`, [runId]);
+		await this.db!.run(`DELETE FROM nlca_runs WHERE run_id = ?`, [runId]);
 	}
 }
 
-/**
- * Master index DB that tracks all experiment SQLite files.
- * Lives at /nlca-index.sqlite3
- */
+// ---------------------------------------------------------------------------
+// ExperimentIndex
+// ---------------------------------------------------------------------------
+
 export class ExperimentIndex {
-	private db: any | null = null;
+	private db: DbHandle | null = null;
 	private ready = false;
 
 	async init(): Promise<void> {
 		if (this.ready) return;
-
-		await ensureSqlite();
-		if (!getSqlite3 || !isCrossOriginIsolated) {
-			throw new Error('SQLite module not available');
-		}
-
-		const sqlite3 = await getSqlite3();
-		try {
-			if (isCrossOriginIsolated() && 'opfs' in sqlite3 && sqlite3.oo1?.OpfsDb) {
-				this.db = new sqlite3.oo1.OpfsDb('/nlca-index.sqlite3');
-			} else {
-				this.db = new sqlite3.oo1.DB('/nlca-index.sqlite3', 'ct');
-			}
-		} catch {
-			this.db = new sqlite3.oo1.DB('/nlca-index.sqlite3', 'ct');
-		}
-
-		this.db.exec(`CREATE TABLE IF NOT EXISTS experiments (
+		const path = '/nlca-index.sqlite3';
+		this.db = dev ? new ServerDbHandle(path) : await makeBrowserHandle(path);
+		await this.db.exec(`CREATE TABLE IF NOT EXISTS experiments (
 			id TEXT PRIMARY KEY,
 			label TEXT NOT NULL,
 			db_filename TEXT NOT NULL,
@@ -263,16 +337,15 @@ export class ExperimentIndex {
 			frame_count INTEGER NOT NULL DEFAULT 0,
 			error_message TEXT
 		)`);
-
 		this.ready = true;
 	}
 
 	async register(meta: ExperimentMeta): Promise<void> {
 		await this.init();
-		this.db.exec({
-			sql: `INSERT OR REPLACE INTO experiments(id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message)
-			      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			bind: [
+		await this.db!.run(
+			`INSERT OR REPLACE INTO experiments(id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
 				meta.id,
 				meta.label,
 				meta.dbFilename,
@@ -283,81 +356,72 @@ export class ExperimentIndex {
 				meta.frameCount,
 				meta.errorMessage ?? null
 			]
-		});
+		);
 	}
 
-	async updateStatus(id: string, status: ExperimentMeta['status'], frameCount?: number, errorMessage?: string): Promise<void> {
+	async updateStatus(
+		id: string,
+		status: ExperimentMeta['status'],
+		frameCount?: number,
+		errorMessage?: string
+	): Promise<void> {
 		await this.init();
 		const now = Date.now();
 		if (frameCount !== undefined) {
-			this.db.exec({
-				sql: `UPDATE experiments SET status = ?, updated_at = ?, frame_count = ?, error_message = ? WHERE id = ?`,
-				bind: [status, now, frameCount, errorMessage ?? null, id]
-			});
+			await this.db!.run(
+				`UPDATE experiments SET status = ?, updated_at = ?, frame_count = ?, error_message = ? WHERE id = ?`,
+				[status, now, frameCount, errorMessage ?? null, id]
+			);
 		} else {
-			this.db.exec({
-				sql: `UPDATE experiments SET status = ?, updated_at = ?, error_message = ? WHERE id = ?`,
-				bind: [status, now, errorMessage ?? null, id]
-			});
+			await this.db!.run(
+				`UPDATE experiments SET status = ?, updated_at = ?, error_message = ? WHERE id = ?`,
+				[status, now, errorMessage ?? null, id]
+			);
 		}
 	}
 
 	async list(): Promise<ExperimentMeta[]> {
 		await this.init();
-		const experiments: ExperimentMeta[] = [];
-		const stmt = this.db.prepare(
+		const rows = await this.db!.all(
 			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message
 			 FROM experiments ORDER BY created_at DESC`
 		);
-		try {
-			while (stmt.step()) {
-				const row = stmt.get([]) as any[];
-				experiments.push({
-					id: String(row[0]),
-					label: String(row[1]),
-					dbFilename: String(row[2]),
-					config: JSON.parse(String(row[3])),
-					status: row[4] as ExperimentMeta['status'],
-					createdAt: Number(row[5]),
-					updatedAt: Number(row[6]),
-					frameCount: Number(row[7]),
-					errorMessage: row[8] ? String(row[8]) : undefined
-				});
-			}
-		} finally {
-			stmt.finalize();
-		}
-		return experiments;
+		return rows.map((row) => ({
+			id: String(row[0]),
+			label: String(row[1]),
+			dbFilename: String(row[2]),
+			config: JSON.parse(String(row[3])) as ExperimentConfig,
+			status: row[4] as ExperimentMeta['status'],
+			createdAt: Number(row[5]),
+			updatedAt: Number(row[6]),
+			frameCount: Number(row[7]),
+			errorMessage: row[8] ? String(row[8]) : undefined
+		}));
 	}
 
 	async delete(id: string): Promise<void> {
 		await this.init();
-		this.db.exec({ sql: `DELETE FROM experiments WHERE id = ?`, bind: [id] });
+		await this.db!.run(`DELETE FROM experiments WHERE id = ?`, [id]);
 	}
 
 	async get(id: string): Promise<ExperimentMeta | null> {
 		await this.init();
-		const stmt = this.db.prepare(
+		const row = await this.db!.get(
 			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message
-			 FROM experiments WHERE id = ?`
+			 FROM experiments WHERE id = ?`,
+			[id]
 		);
-		try {
-			stmt.bind([id]);
-			if (!stmt.step()) return null;
-			const row = stmt.get([]) as any[];
-			return {
-				id: String(row[0]),
-				label: String(row[1]),
-				dbFilename: String(row[2]),
-				config: JSON.parse(String(row[3])),
-				status: row[4] as ExperimentMeta['status'],
-				createdAt: Number(row[5]),
-				updatedAt: Number(row[6]),
-				frameCount: Number(row[7]),
-				errorMessage: row[8] ? String(row[8]) : undefined
-			};
-		} finally {
-			stmt.finalize();
-		}
+		if (!row) return null;
+		return {
+			id: String(row[0]),
+			label: String(row[1]),
+			dbFilename: String(row[2]),
+			config: JSON.parse(String(row[3])) as ExperimentConfig,
+			status: row[4] as ExperimentMeta['status'],
+			createdAt: Number(row[5]),
+			updatedAt: Number(row[6]),
+			frameCount: Number(row[7]),
+			errorMessage: row[8] ? String(row[8]) : undefined
+		};
 	}
 }

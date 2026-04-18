@@ -230,7 +230,7 @@
 						<span>Take a Tour</span>
 					</button>
 					<a
-						href="https://github.com/NeoVand/games-of-life"
+						href="https://github.com/Mahdi-s/NLCA"
 						target="_blank"
 						rel="noopener noreferrer"
 						class="github-link"

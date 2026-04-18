@@ -198,11 +198,17 @@ export class NlcaStepper {
 			if (this.cfg.orchestrator.frameStreamed) {
 				const t0 = performance.now();
 				const decoder = new TextDecoder();
+				const provider = this.cfg.orchestrator.apiProvider ?? 'openrouter';
+				const activeKey =
+					provider === 'sambanova'
+						? this.cfg.orchestrator.sambaNovaApiKey ?? ''
+						: this.cfg.orchestrator.apiKey ?? '';
 				const res = await fetch(`${base}/api/nlca/decideFrameStream`, {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
 					body: JSON.stringify({
-						apiKey: this.cfg.orchestrator.apiKey,
+						apiProvider: provider,
+						apiKey: activeKey,
 						model: this.cfg.orchestrator.model.model,
 						temperature: this.cfg.orchestrator.model.temperature,
 						timeoutMs: this.cfg.orchestrator.cellTimeoutMs,
@@ -501,12 +507,14 @@ export class NlcaStepper {
 			callbacks?.onBatchProgress?.(completedCells, totalCells, workingGrid);
 		};
 
-		// Process chunks with bounded parallelism
+		// Process chunks with bounded parallelism. Fail fast on first chunk error so we
+		// do not keep burning quota after a hard upstream failure (rate limit, invalid JSON).
 		await asyncPool(parallelChunks, chunks, async (chunk, idx) => {
 			try {
 				await processChunk(chunk);
 			} catch (err) {
 				console.error(`[NLCA] Chunk ${idx} failed:`, err);
+				throw err;
 			}
 		});
 

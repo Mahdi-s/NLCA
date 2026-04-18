@@ -1,7 +1,9 @@
-import type { NlcaNeighborhood } from '$lib/nlca/types.js';
+import type { ApiProvider, NlcaNeighborhood } from '$lib/nlca/types.js';
 
 type NlcaSettingsSnapshot = {
+	apiProvider: ApiProvider;
 	apiKey: string;
+	sambaNovaApiKey: string;
 	model: string;
 	maxConcurrency: number;
 	batchSize: number;
@@ -15,7 +17,9 @@ type NlcaSettingsSnapshot = {
 };
 
 const STORAGE_KEYS = {
+	apiProvider: 'nlca_api_provider',
 	apiKey: 'nlca_openrouter_api_key',
+	sambaNovaApiKey: 'nlca_sambanova_api_key',
 	model: 'nlca_model',
 	maxConcurrency: 'nlca_max_concurrency',
 	batchSize: 'nlca_batch_size',
@@ -27,6 +31,9 @@ const STORAGE_KEYS = {
 	gridHeight: 'nlca_grid_height',
 	targetFrames: 'nlca_target_frames'
 } as const;
+
+const SAMBANOVA_DEFAULT_MODEL = 'Meta-Llama-3.3-70B-Instruct';
+const OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o-mini';
 
 function safeReadStorage(key: string): string | null {
 	if (typeof window === 'undefined') return null;
@@ -61,10 +68,17 @@ function parseNeighborhood(value: string | null, fallback: NlcaNeighborhood): Nl
 	return fallback;
 }
 
+function parseProvider(value: string | null, fallback: ApiProvider): ApiProvider {
+	if (value === 'openrouter' || value === 'sambanova') return value;
+	return fallback;
+}
+
 let initialized = false;
 
+let apiProvider = $state<ApiProvider>('openrouter');
 let apiKey = $state('');
-let model = $state('openai/gpt-4o-mini');
+let sambaNovaApiKey = $state('');
+let model = $state(OPENROUTER_DEFAULT_MODEL);
 let maxConcurrency = $state(50);
 let batchSize = $state(200);
 let frameBatched = $state(true);
@@ -80,13 +94,20 @@ function ensureInitialized() {
 	initialized = true;
 
 	const envApiKey = import.meta.env.VITE_NLCA_OPENROUTER_API_KEY ?? '';
-	const envModel = import.meta.env.VITE_NLCA_MODEL ?? 'openai/gpt-4o-mini';
+	const envSambaKey = import.meta.env.VITE_NLCA_SAMBANOVA_API_KEY ?? '';
+	const envModel = import.meta.env.VITE_NLCA_MODEL ?? OPENROUTER_DEFAULT_MODEL;
 
 	apiKey = envApiKey;
+	sambaNovaApiKey = envSambaKey;
 	model = envModel;
+
+	apiProvider = parseProvider(safeReadStorage(STORAGE_KEYS.apiProvider), 'openrouter');
 
 	const storedApiKey = safeReadStorage(STORAGE_KEYS.apiKey);
 	if (typeof storedApiKey === 'string') apiKey = storedApiKey;
+
+	const storedSambaKey = safeReadStorage(STORAGE_KEYS.sambaNovaApiKey);
+	if (typeof storedSambaKey === 'string') sambaNovaApiKey = storedSambaKey;
 
 	const storedModel = safeReadStorage(STORAGE_KEYS.model);
 	if (typeof storedModel === 'string' && storedModel.trim().length > 0) model = storedModel;
@@ -106,6 +127,26 @@ export function getNlcaSettingsState() {
 	ensureInitialized();
 
 	return {
+		get apiProvider() {
+			return apiProvider;
+		},
+		set apiProvider(value: ApiProvider) {
+			const prev = apiProvider;
+			apiProvider = parseProvider(value, 'openrouter');
+			safeWriteStorage(STORAGE_KEYS.apiProvider, apiProvider);
+			// When switching providers, swap the default model if the current one
+			// clearly belongs to the other provider's namespace.
+			if (prev !== apiProvider) {
+				if (apiProvider === 'sambanova' && model.includes('/')) {
+					model = SAMBANOVA_DEFAULT_MODEL;
+					safeWriteStorage(STORAGE_KEYS.model, model);
+				} else if (apiProvider === 'openrouter' && !model.includes('/')) {
+					model = OPENROUTER_DEFAULT_MODEL;
+					safeWriteStorage(STORAGE_KEYS.model, model);
+				}
+			}
+		},
+
 		get apiKey() {
 			return apiKey;
 		},
@@ -114,11 +155,20 @@ export function getNlcaSettingsState() {
 			safeWriteStorage(STORAGE_KEYS.apiKey, apiKey);
 		},
 
+		get sambaNovaApiKey() {
+			return sambaNovaApiKey;
+		},
+		set sambaNovaApiKey(value: string) {
+			sambaNovaApiKey = value ?? '';
+			safeWriteStorage(STORAGE_KEYS.sambaNovaApiKey, sambaNovaApiKey);
+		},
+
 		get model() {
 			return model;
 		},
 		set model(value: string) {
-			model = (value ?? '').trim() || 'openai/gpt-4o-mini';
+			const fallback = apiProvider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : OPENROUTER_DEFAULT_MODEL;
+			model = (value ?? '').trim() || fallback;
 			safeWriteStorage(STORAGE_KEYS.model, model);
 		},
 
@@ -144,7 +194,6 @@ export function getNlcaSettingsState() {
 		set frameBatched(value: boolean) {
 			frameBatched = !!value;
 			safeWriteStorage(STORAGE_KEYS.frameBatched, frameBatched ? 'true' : 'false');
-			// Streaming only makes sense in frame-batched mode.
 			if (!frameBatched) {
 				frameStreamed = false;
 				safeWriteStorage(STORAGE_KEYS.frameStreamed, 'false');
@@ -179,7 +228,7 @@ export function getNlcaSettingsState() {
 			return gridWidth;
 		},
 		set gridWidth(value: number) {
-			gridWidth = clampInt(value, 8, 512, 10);
+			gridWidth = clampInt(value, 8, 2048, 10);
 			safeWriteStorage(STORAGE_KEYS.gridWidth, String(gridWidth));
 		},
 
@@ -187,7 +236,7 @@ export function getNlcaSettingsState() {
 			return gridHeight;
 		},
 		set gridHeight(value: number) {
-			gridHeight = clampInt(value, 8, 512, 10);
+			gridHeight = clampInt(value, 8, 2048, 10);
 			safeWriteStorage(STORAGE_KEYS.gridHeight, String(gridHeight));
 		},
 
@@ -201,7 +250,9 @@ export function getNlcaSettingsState() {
 
 		toJSON(): NlcaSettingsSnapshot {
 			return {
+				apiProvider,
 				apiKey,
+				sambaNovaApiKey,
 				model,
 				maxConcurrency,
 				batchSize,

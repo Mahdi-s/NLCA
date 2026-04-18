@@ -58,13 +58,23 @@
 	$effect(() => {
 		const active = experimentManager.active;
 		if (active?.currentGrid && canvas) {
-			canvas.setExperimentGrid(active.currentGrid, active.config.gridWidth, active.config.gridHeight);
+			canvas.setExperimentGrid(
+				active.currentGrid,
+				active.config.gridWidth,
+				active.config.gridHeight,
+				active.currentColorsHex,
+				active.currentColorStatus8
+			);
 		}
 	});
 
 	function configFromCurrentSettings(): ExperimentConfig {
+		const provider = nlcaSettings.apiProvider;
+		const sambaMode = provider === 'sambanova';
 		return {
+			apiProvider: provider,
 			apiKey: nlcaSettings.apiKey,
+			sambaNovaApiKey: nlcaSettings.sambaNovaApiKey,
 			model: nlcaSettings.model,
 			temperature: 0,
 			maxOutputTokens: 64,
@@ -76,14 +86,15 @@
 			promptPresetId: undefined,
 			useAdvancedMode: nlcaPrompt.useAdvancedMode,
 			advancedTemplate: nlcaPrompt.advancedTemplate,
-			memoryWindow: nlcaSettings.memoryWindow,
+			// SambaNova hyperscale enforces memoryWindow=0 to maximise dedup.
+			memoryWindow: sambaMode ? 0 : nlcaSettings.memoryWindow,
 			maxConcurrency: nlcaSettings.maxConcurrency,
 			batchSize: nlcaSettings.batchSize,
-			frameBatched: nlcaSettings.frameBatched,
-			frameStreamed: nlcaSettings.frameStreamed,
-			cellTimeoutMs: 30_000,
-			compressPayload: false,
-			deduplicateRequests: false,
+			frameBatched: sambaMode ? true : nlcaSettings.frameBatched,
+			frameStreamed: sambaMode ? false : nlcaSettings.frameStreamed,
+			cellTimeoutMs: sambaMode ? 120_000 : 30_000,
+			compressPayload: sambaMode ? true : false,
+			deduplicateRequests: sambaMode ? true : false,
 			targetFrames: nlcaSettings.targetFrames
 		};
 	}
@@ -262,8 +273,6 @@
 	class:light-theme={simState.isLightTheme}
 >
 	<Canvas bind:this={canvas} nlcaMode={true} />
-
-	<ClickHint />
 
 	<InfoOverlay />
 

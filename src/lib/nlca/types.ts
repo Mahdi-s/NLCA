@@ -62,8 +62,14 @@ export interface NlcaModelConfig {
 	maxOutputTokens: number;
 }
 
+export type ApiProvider = 'openrouter' | 'sambanova';
+
 export interface NlcaOrchestratorConfig {
 	apiKey: string;
+	/** SambaNova API key — used when apiProvider === 'sambanova'. */
+	sambaNovaApiKey?: string;
+	/** Which upstream inference provider to route to. Default 'openrouter'. */
+	apiProvider?: ApiProvider;
 	model: NlcaModelConfig;
 	/** Max concurrent LLM calls (one per cell) */
 	maxConcurrency: number;
@@ -128,6 +134,10 @@ export interface NlcaStepResult {
 export interface ExperimentConfig {
 	// Model & Provider
 	apiKey: string;
+	/** SambaNova API key (kept alongside `apiKey` so either provider can be selected). */
+	sambaNovaApiKey?: string;
+	/** Which provider this experiment targeted. */
+	apiProvider?: ApiProvider;
 	model: string;
 	temperature: number;
 	maxOutputTokens: number;

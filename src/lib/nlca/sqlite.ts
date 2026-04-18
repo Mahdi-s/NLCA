@@ -1,24 +1,28 @@
-// Dynamic import to avoid SSR issues - only loads in browser
-let sqlite3Promise: Promise<any> | null = null;
+// Use globalThis to survive Vite HMR module re-evaluation. A module-level variable
+// resets to null on hot reload, causing a second sqlite3InitModule() call which fails
+// because sqlite3.mjs already deleted globalThis.sqlite3InitModuleState in the first run.
+const G = globalThis as typeof globalThis & { __nlcaSqlite3?: Promise<any> };
 
 export function isCrossOriginIsolated(): boolean {
-	// OPFS-backed worker mode requires COOP/COEP (crossOriginIsolated).
 	return typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : false;
 }
 
-export async function getSqlite3(): Promise<any> {
+export function getSqlite3(): Promise<any> {
 	if (typeof window === 'undefined') {
 		throw new Error('SQLite can only be initialized in the browser');
 	}
-	if (!sqlite3Promise) {
-		// Use main export - Vite will resolve to browser version via resolve.conditions
-		const sqlite3InitModule = (await import('@sqlite.org/sqlite-wasm')).default;
-		sqlite3Promise = sqlite3InitModule({
-			print: () => {},
-			printErr: (...args: unknown[]) => console.error('[sqlite]', ...args)
-		});
+	if (!G.__nlcaSqlite3) {
+		// Assign before awaiting so concurrent callers share the same promise
+		// and never call sqlite3InitModule() more than once (second call 404s
+		// because globalThis.sqlite3InitModuleState is deleted on first call).
+		G.__nlcaSqlite3 = import('@sqlite.org/sqlite-wasm').then((mod) =>
+			mod.default({
+				print: () => {},
+				printErr: (...args: unknown[]) => console.error('[sqlite]', ...args)
+			})
+		);
 	}
-	return sqlite3Promise;
+	return G.__nlcaSqlite3;
 }
 
 
