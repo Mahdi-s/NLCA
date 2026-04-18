@@ -19,7 +19,10 @@ type PromptConfigPayload = {
 	compressPayload?: boolean;
 };
 
+type ApiProvider = 'openrouter' | 'sambanova';
+
 type DecideFrameRequest = {
+	apiProvider?: ApiProvider;
 	apiKey: string;
 	model: string;
 	temperature?: number;
@@ -32,12 +35,32 @@ type DecideFrameRequest = {
 	promptConfig: PromptConfigPayload;
 };
 
+const SAMBANOVA_DEFAULT_MODEL = 'Meta-Llama-3.3-70B-Instruct';
+
+function resolveUpstream(provider: ApiProvider): string {
+	return provider === 'sambanova'
+		? 'https://api.sambanova.ai/v1/chat/completions'
+		: 'https://openrouter.ai/api/v1/chat/completions';
+}
+
+const SAMBANOVA_ZERO_THINKING_SYSTEM =
+	'CRITICAL: You are a synchronous cellular automata compute node. Apply the provided task rule to the input array. Output ONLY a valid JSON object matching the strict schema exactly. NO reasoning. NO chain-of-thought. NO markdown blocks (do not use ```json). Output the absolute bare minimum tokens required.';
+
 type OpenRouterStreamChunk = {
 	id?: string;
 	choices?: Array<{
-		delta?: { content?: string; role?: string };
+		delta?: {
+			content?: string;
+			role?: string;
+			// Reasoning-model fields (xAI Grok, etc.) — billed as output tokens but never
+			// contain the visible JSON answer we need. Logged for diagnosis; never added to jsonBuf.
+			reasoning?: string;
+			reasoning_details?: Array<{ type: string; text?: string }>;
+		};
 		finish_reason?: string | null;
 	}>;
+	// Top-level error from OpenRouter (e.g. context limit, provider error mid-stream)
+	error?: { message?: string; code?: number };
 	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 };
 
@@ -54,11 +77,44 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatStreamOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+/** Non-streaming fallback — used when the streaming path produces empty delta.content. */
+async function upstreamChatOnce(
+	fetchFn: typeof fetch,
+	provider: ApiProvider,
+	apiKey: string,
+	body: unknown,
+	timeoutMs: number
+): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn(resolveUpstream(provider), {
+			method: 'POST',
+			signal: ctrl.signal,
+			headers: {
+				Authorization: `Bearer ${apiKey}`,
+				'Content-Type': 'application/json',
+				'HTTP-Referer': 'http://localhost',
+				'X-Title': 'games-of-life-nlca'
+			},
+			body: JSON.stringify(body)
+		});
+	} finally {
+		clearTimeout(t);
+	}
+}
+
+async function upstreamChatStreamOnce(
+	fetchFn: typeof fetch,
+	provider: ApiProvider,
+	apiKey: string,
+	body: unknown,
+	timeoutMs: number
+): Promise<Response> {
+	const ctrl = new AbortController();
+	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
+	try {
+		return await fetchFn(resolveUpstream(provider), {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
@@ -107,9 +163,29 @@ function renderAdvancedTemplateForFrame(
 		.replace(/\{\{OUTPUT_CONTRACT\}\}/g, outputContract);
 }
 
-function buildSystemPrompt(cfg: PromptConfigPayload, width: number, height: number): string {
+function buildSystemPrompt(
+	cfg: PromptConfigPayload,
+	width: number,
+	height: number,
+	provider: ApiProvider
+): string {
 	const wantColor = cfg.cellColorHexEnabled === true;
 	const compressed = cfg.compressPayload === true;
+
+	if (provider === 'sambanova') {
+		const schemaLine = wantColor
+			? 'Output EXACTLY this JSON shape: {"d":[{"i":<integer cellId>,"s":0 or 1,"c":"#RRGGBB uppercase hex"}, ...]}'
+			: 'Output EXACTLY this JSON shape: {"d":[{"i":<integer cellId>,"s":0 or 1}, ...]}';
+		return [
+			SAMBANOVA_ZERO_THINKING_SYSTEM,
+			'',
+			`Grid: ${width}×${height}.`,
+			`Input rows: [cellId, self, aliveCount, [neighbor_states_in_offset_order]]${wantColor ? ' (color mode ON).' : '.'}`,
+			schemaLine,
+			'Every input cellId must appear in the output exactly once. No extra keys, no duplicates, no non-JSON text.',
+			`Task: ${cfg.taskDescription}`
+		].join('\n');
+	}
 
 	// Compressed format explanation
 	const formatLine = compressed
@@ -157,7 +233,25 @@ function buildSystemPrompt(cfg: PromptConfigPayload, width: number, height: numb
 function buildUserPayload(req: DecideFrameRequest) {
 	const wantColor = req.promptConfig?.cellColorHexEnabled === true;
 	const compressed = req.promptConfig?.compressPayload === true;
-	
+	const provider: ApiProvider = req.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
+
+	if (provider === 'sambanova') {
+		return {
+			g: req.generation,
+			c: wantColor ? 1 : 0,
+			d: req.cells.map((cell) => {
+				let alive = 0;
+				const nStates: CellState01[] = [];
+				for (const nn of cell.neighborhood) {
+					const s = (nn[2] ?? 0) as CellState01;
+					if (s === 1) alive++;
+					nStates.push(s);
+				}
+				return [cell.cellId, cell.self, alive, nStates] as const;
+			})
+		};
+	}
+
 	if (compressed) {
 		// Compressed format: reduces token count by ~40-50%
 		// Cell format: [id, x, y, self, aliveCount, neighborStates]
@@ -208,7 +302,34 @@ function buildUserPayload(req: DecideFrameRequest) {
 	};
 }
 
-function buildJsonSchema(cellCount: number, wantColor: boolean) {
+function buildJsonSchema(cellCount: number, wantColor: boolean, provider: ApiProvider) {
+	if (provider === 'sambanova') {
+		const colorProp = wantColor ? { c: { type: 'string', pattern: '^#[0-9A-F]{6}$' } } : {};
+		const required = wantColor ? ['i', 's', 'c'] : ['i', 's'];
+		return {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				d: {
+					type: 'array',
+					minItems: cellCount,
+					maxItems: cellCount,
+					items: {
+						type: 'object',
+						additionalProperties: false,
+						properties: {
+							i: { type: 'integer' },
+							s: { type: 'integer', enum: [0, 1] },
+							...colorProp
+						},
+						required
+					}
+				}
+			},
+			required: ['d']
+		} as const;
+	}
+
 	const colorProp = wantColor
 		? {
 				color: {
@@ -255,7 +376,9 @@ type ExtractorState = {
 
 function ensureDecisionsArrayStarted(buf: string, st: ExtractorState): void {
 	if (st.decisionsStarted) return;
-	const keyIdx = buf.indexOf('"decisions"');
+	// Accept both verbose ("decisions") and SambaNova-minified ("d") array keys.
+	let keyIdx = buf.indexOf('"decisions"');
+	if (keyIdx < 0) keyIdx = buf.indexOf('"d"');
 	if (keyIdx < 0) return;
 	const arrIdx = buf.indexOf('[', keyIdx);
 	if (arrIdx < 0) return;
@@ -328,8 +451,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		// ignore
 	}
 
+	const provider: ApiProvider = payload?.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
 	const apiKey = typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : '';
-	const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const rawModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const model = rawModel || (provider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : '');
 	const width = Number(payload?.width ?? NaN);
 	const height = Number(payload?.height ?? NaN);
 	const generation = Number(payload?.generation ?? NaN);
@@ -347,14 +472,25 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const temperature = typeof payload?.temperature === 'number' && Number.isFinite(payload.temperature) ? payload.temperature : 0;
 	const timeoutMs = typeof payload?.timeoutMs === 'number' && Number.isFinite(payload.timeoutMs) ? payload.timeoutMs : 30_000;
 	
-	// Calculate a safe max_tokens estimate based on cell count and color mode.
-	// Each decision: ~30-35 chars without color (~8 tokens), ~40-45 chars with color (~11 tokens).
-	// Add 30% buffer for JSON structure overhead (array brackets, commas, etc.).
+	// Per-decision output-token budget. Empirically measured from gpt-oss-120b
+	// runs that reported completion_tokens=6500–7100 for 400 color decisions
+	// → ~17 tokens/decision real cost. 50% safety margin → ~25 budget.
+	// The *floor* is capped below 12288 so we never consume half the context
+	// window on very small grids (8×8 = 64 cells) or on models with small
+	// windows like Qwen3-14b (40960) where input alone is ~33k.
 	const wantColor = promptConfig.cellColorHexEnabled === true;
-	const tokensPerDecision = wantColor ? 11 : 8;
-	const estimatedTokens = Math.ceil(cells.length * tokensPerDecision * 1.3);
-	const userMaxTokens = typeof payload?.maxOutputTokens === 'number' && Number.isFinite(payload.maxOutputTokens) ? payload.maxOutputTokens : 8_192;
-	const maxOutputTokens = Math.max(userMaxTokens, estimatedTokens, 8_192);
+	const tokensPerDecision = wantColor ? 18 : 12;
+	const estimatedTokens = Math.ceil(cells.length * tokensPerDecision * 1.4);
+	const userMaxTokens =
+		typeof payload?.maxOutputTokens === 'number' && Number.isFinite(payload.maxOutputTokens)
+			? payload.maxOutputTokens
+			: 8_192;
+	// min-floor 4096, max-ceiling 12288. Still comfortably above what any model
+	// ever actually spends (max observed 8168), and half of what broke Qwen3.
+	const maxOutputTokens = Math.max(
+		4096,
+		Math.min(12_288, Math.max(userMaxTokens, estimatedTokens))
+	);
 
 	// Validate that every requested cellId is unique (so we can enforce exact coverage in the stream).
 	const expectedIds = new Set<number>();
@@ -365,28 +501,48 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	}
 	if (expectedIds.size !== cells.length) throw error(400, 'Duplicate cellId in request');
 
-	const schema = buildJsonSchema(cells.length, wantColor);
+	const schema = buildJsonSchema(cells.length, wantColor, provider);
 	const messages = [
-		{ role: 'system', content: buildSystemPrompt(promptConfig, width, height) },
-		{ role: 'user', content: JSON.stringify(buildUserPayload({ ...(payload as DecideFrameRequest), cells, promptConfig })) }
+		{ role: 'system', content: buildSystemPrompt(promptConfig, width, height, provider) },
+		{
+			role: 'user',
+			content: JSON.stringify(
+				buildUserPayload({ ...(payload as DecideFrameRequest), apiProvider: provider, cells, promptConfig })
+			)
+		}
 	];
 
-	const body = {
+	// SambaNova: json_object instead of strict json_schema — see decideFrame.
+	// OpenRouter: keep strict schema, plus stream_options + reasoning knobs.
+	const responseFormat =
+		provider === 'sambanova'
+			? { type: 'json_object' }
+			: {
+					type: 'json_schema',
+					json_schema: { name: 'nlca_frame_decisions', strict: true, schema }
+				};
+
+	const body: Record<string, unknown> = {
 		model,
 		temperature,
 		max_tokens: maxOutputTokens,
 		stream: true,
-		// OpenAI-style: include usage at end if supported by provider.
-		streamOptions: { includeUsage: true },
 		messages,
-		response_format: {
-			type: 'json_schema',
-			json_schema: {
-				name: 'nlca_frame_decisions',
-				strict: true,
-				schema
-			}
-		}
+		response_format: responseFormat
+	};
+	if (provider === 'openrouter') {
+		body.stream_options = { include_usage: true };
+		body.reasoning = { effort: 'low', exclude: true };
+	}
+
+	// Body for non-streaming fallback (no stream/stream_options/reasoning suppression).
+	// Same response_format rules as the streaming body.
+	const fallbackBody = {
+		model,
+		temperature,
+		max_tokens: maxOutputTokens,
+		messages,
+		response_format: responseFormat
 	};
 
 	const frameId = `${generation}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -401,9 +557,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const maxAttempts = 3;
 	let attempt = 0;
 	let upstream: Response | null = null;
+	let currentMaxTokens = maxOutputTokens;
 	while (true) {
 		attempt++;
-		upstream = await openRouterChatStreamOnce(fetch, apiKey, body, timeoutMs);
+		upstream = await upstreamChatStreamOnce(fetch, provider, apiKey, body, timeoutMs);
 		if (upstream.status === 429 && attempt < maxAttempts) {
 			const retryAfter = parseRetryAfterSeconds(upstream.headers.get('retry-after'));
 			const waitMs = Math.max(250, Math.round(((retryAfter ?? 1) * 1000) + Math.random() * 250));
@@ -416,6 +573,23 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			console.log(`[NLCA STREAM] 5xx frame=${frameId} status=${upstream.status} retryMs=${waitMs} attempt=${attempt}/${maxAttempts}`);
 			await sleep(waitMs);
 			continue;
+		}
+		// Context-length overflow detection: upstream returns 400 with "maximum
+		// context length" in the error body when `max_tokens + input > window`.
+		// Halve max_tokens and retry; floor at 2048 so we don't loop forever.
+		if (upstream.status === 400 && attempt < maxAttempts) {
+			const text = await upstream.clone().text().catch(() => '');
+			if (/maximum context length|context_length|context window/i.test(text)) {
+				const next = Math.max(2048, Math.floor(currentMaxTokens / 2));
+				if (next < currentMaxTokens) {
+					console.log(
+						`[NLCA STREAM] context-overflow frame=${frameId} max_tokens ${currentMaxTokens}→${next} attempt=${attempt}/${maxAttempts}`
+					);
+					currentMaxTokens = next;
+					body.max_tokens = next;
+					continue;
+				}
+			}
 		}
 		break;
 	}
@@ -445,6 +619,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			let st: ExtractorState = { decisionsStarted: false, scanPos: 0 };
 			let usage: OpenRouterStreamChunk['usage'] | null = null;
 			const seenIds = new Set<number>();
+			// Diagnostic counters for reasoning-model detection
+			let reasoningChunksSeen = 0;
+			let contentChunksSeen = 0;
 
 			try {
 				while (true) {
@@ -531,19 +708,20 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								continue;
 							}
 
-							const o = obj as { cellId?: unknown; state?: unknown; color?: unknown };
-							const cellId = Number(o.cellId);
-							const stateNum = Number(o.state);
+							const o = obj as { cellId?: unknown; state?: unknown; color?: unknown; i?: unknown; s?: unknown; c?: unknown };
+							const cellId = Number(o.cellId ?? o.i);
+							const stateNum = Number(o.state ?? o.s);
 							if (!Number.isFinite(cellId) || cellId < 0) continue;
 							if (stateNum !== 0 && stateNum !== 1) continue;
 							if (!expectedIds.has(cellId)) throw new Error(`Invalid cellId in output: ${cellId}`);
 							if (seenIds.has(cellId)) throw new Error(`Duplicate cellId in output: ${cellId}`);
 							seenIds.add(cellId);
 
+							const rawColor = o.color ?? o.c;
 							let color: string | undefined;
-							if (wantColor && typeof o.color === 'string') {
-								const c = o.color.trim().toUpperCase();
-								if (/^#[0-9A-F]{6}$/.test(c)) color = c;
+							if (wantColor && typeof rawColor === 'string') {
+								const cc = rawColor.trim().toUpperCase();
+								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 							}
 
 							completed++;
@@ -595,9 +773,20 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 							}
 
 							if (chunk.usage) usage = chunk.usage;
+							if (chunk.error) {
+								console.log(`[NLCA STREAM] upstream-error frame=${frameId} code=${chunk.error.code ?? '?'} msg=${String(chunk.error.message ?? '').slice(0, 120)}`);
+							}
 
-							const delta = chunk.choices?.[0]?.delta?.content;
+							const chunkDelta = chunk.choices?.[0]?.delta;
+							if (chunkDelta?.reasoning || chunkDelta?.reasoning_details) {
+								reasoningChunksSeen++;
+								if (reasoningChunksSeen === 1) {
+									console.log(`[NLCA STREAM] reasoning-delta frame=${frameId} model=${model} — output going to reasoning channel, not delta.content`);
+								}
+							}
+							const delta = chunkDelta?.content;
 							if (typeof delta === 'string' && delta.length > 0) {
+								contentChunksSeen++;
 								jsonBuf += delta;
 
 								const extracted = extractDecisionObjects(jsonBuf, st);
@@ -612,19 +801,20 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 										continue;
 									}
 
-									const o = obj as { cellId?: unknown; state?: unknown; color?: unknown };
-									const cellId = Number(o.cellId);
-									const stateNum = Number(o.state);
+									const o = obj as { cellId?: unknown; state?: unknown; color?: unknown; i?: unknown; s?: unknown; c?: unknown };
+									const cellId = Number(o.cellId ?? o.i);
+									const stateNum = Number(o.state ?? o.s);
 									if (!Number.isFinite(cellId) || cellId < 0) continue;
 									if (stateNum !== 0 && stateNum !== 1) continue;
 									if (!expectedIds.has(cellId)) throw new Error(`Invalid cellId in output: ${cellId}`);
 									if (seenIds.has(cellId)) throw new Error(`Duplicate cellId in output: ${cellId}`);
 									seenIds.add(cellId);
 
+									const rawColor = o.color ?? o.c;
 									let color: string | undefined;
-									if (wantColor && typeof o.color === 'string') {
-										const c = o.color.trim().toUpperCase();
-										if (/^#[0-9A-F]{6}$/.test(c)) color = c;
+									if (wantColor && typeof rawColor === 'string') {
+										const cc = rawColor.trim().toUpperCase();
+										if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 									}
 
 									completed++;
@@ -650,17 +840,136 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 					}
 				}
 
+				// -----------------------------------------------------------------------
+				// Reasoning-model fallback: if the stream produced zero content but billed
+				// completion tokens, the model (e.g. xAI Grok) likely routed its output
+				// entirely through delta.reasoning / delta.reasoning_details and never
+				// wrote anything to delta.content. Retry once as a non-streaming call so
+				// the visible answer arrives in choices[0].message.content as normal.
+				// -----------------------------------------------------------------------
+				const billedTokens = usage?.completion_tokens ?? 0;
+				if (completed === 0 && jsonBuf.length === 0 && billedTokens > 0) {
+					console.log(
+						`[NLCA STREAM] empty-content fallback frame=${frameId} ` +
+							`reasoningChunks=${reasoningChunksSeen} contentChunks=${contentChunksSeen} ` +
+							`billedTokens=${billedTokens} — retrying as non-stream`
+					);
+					try {
+						const fallbackRes = await upstreamChatOnce(fetch, provider, apiKey, fallbackBody, timeoutMs * 2);
+						if (!fallbackRes.ok) throw new Error(`Fallback HTTP ${fallbackRes.status}`);
+						const fallbackData = (await fallbackRes.json()) as {
+							id?: string;
+							choices?: Array<{ message?: { content?: unknown } }>;
+							usage?: { prompt_tokens?: number; completion_tokens?: number };
+						};
+						const rawContent = fallbackData?.choices?.[0]?.message?.content;
+						const parsed =
+							typeof rawContent === 'string' ? JSON.parse(rawContent) : rawContent;
+						const fallbackDecisions =
+							(parsed as { decisions?: unknown })?.decisions ?? (parsed as { d?: unknown })?.d;
+						if (!Array.isArray(fallbackDecisions)) {
+							throw new Error('Fallback returned no decisions array');
+						}
+						for (const d of fallbackDecisions) {
+							const rec = d as Record<string, unknown>;
+							const cellId = Number(rec.cellId ?? rec.i ?? NaN);
+							const stateNum = Number(rec.state ?? rec.s ?? NaN);
+							if (!Number.isFinite(cellId) || !expectedIds.has(cellId)) continue;
+							if (seenIds.has(cellId)) continue;
+							if (stateNum !== 0 && stateNum !== 1) continue;
+							seenIds.add(cellId);
+							const rawColor = rec.color ?? rec.c;
+							let color: string | undefined;
+							if (wantColor && typeof rawColor === 'string') {
+								const cc = rawColor.trim().toUpperCase();
+								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
+							}
+							completed++;
+							controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						}
+						console.log(
+							`[NLCA STREAM] fallback-done frame=${frameId} completed=${completed}/${total} ` +
+								`fallbackUsage=${fallbackData?.usage?.completion_tokens ?? '?'}`
+						);
+					} catch (fallbackErr) {
+						console.log(
+							`[NLCA STREAM] fallback-error frame=${frameId} ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`
+						);
+						// fall through to the incomplete-frame error below
+					}
+				}
+
+				// -----------------------------------------------------------------------
+				// Max-tokens cutoff retry: partial decisions parsed but usage hit the cap.
+				// Seen on non-GPT tokenizers (Gemma, Llama) where per-decision tokens are
+				// denser than estimated. Retry once non-streaming with doubled max_tokens
+				// and emit only the cellIds we haven't already seen — this avoids duplicate
+				// decision events on the client while completing the frame.
+				// -----------------------------------------------------------------------
+				const hitMaxTokens =
+					completed > 0 &&
+					completed < total &&
+					billedTokens >= Math.floor(maxOutputTokens * 0.95);
+				if (hitMaxTokens) {
+					const retryMaxTokens = Math.min(maxOutputTokens * 2, 131_072);
+					console.log(
+						`[NLCA STREAM] max-tokens retry frame=${frameId} ${completed}/${total} ` +
+							`billedTokens=${billedTokens}/${maxOutputTokens} → retry with max_tokens=${retryMaxTokens}`
+					);
+					try {
+						const retryBody = { ...fallbackBody, max_tokens: retryMaxTokens };
+						const retryRes = await upstreamChatOnce(fetch, provider, apiKey, retryBody, timeoutMs * 2);
+						if (!retryRes.ok) throw new Error(`Retry HTTP ${retryRes.status}`);
+						const retryData = (await retryRes.json()) as {
+							choices?: Array<{ message?: { content?: unknown } }>;
+							usage?: { completion_tokens?: number };
+						};
+						const rawContent = retryData?.choices?.[0]?.message?.content;
+						const parsed =
+							typeof rawContent === 'string' ? JSON.parse(rawContent) : rawContent;
+						const retryDecisions =
+							(parsed as { decisions?: unknown })?.decisions ?? (parsed as { d?: unknown })?.d;
+						if (!Array.isArray(retryDecisions)) {
+							throw new Error('Retry returned no decisions array');
+						}
+						let added = 0;
+						for (const d of retryDecisions) {
+							const rec = d as Record<string, unknown>;
+							const cellId = Number(rec.cellId ?? rec.i ?? NaN);
+							const stateNum = Number(rec.state ?? rec.s ?? NaN);
+							if (!Number.isFinite(cellId) || !expectedIds.has(cellId)) continue;
+							if (seenIds.has(cellId)) continue; // already emitted from stream
+							if (stateNum !== 0 && stateNum !== 1) continue;
+							seenIds.add(cellId);
+							const rawColor = rec.color ?? rec.c;
+							let color: string | undefined;
+							if (wantColor && typeof rawColor === 'string') {
+								const cc = rawColor.trim().toUpperCase();
+								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
+							}
+							completed++;
+							added++;
+							controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						}
+						console.log(
+							`[NLCA STREAM] max-tokens retry done frame=${frameId} added=${added} ` +
+								`completed=${completed}/${total} retryTokens=${retryData?.usage?.completion_tokens ?? '?'}`
+						);
+					} catch (retryErr) {
+						console.log(
+							`[NLCA STREAM] max-tokens retry error frame=${frameId} ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+						);
+					}
+				}
+
 				const latencyMs = performance.now() - startedAt;
 				if (completed !== total) {
-					// Log diagnostic info before failing
 					console.log(
 						`[NLCA STREAM] incomplete frame=${frameId} completed=${completed}/${total} ` +
+							`reasoningChunks=${reasoningChunksSeen} contentChunks=${contentChunksSeen} ` +
 							`jsonBufChars=${jsonBuf.length} jsonBufPreview=${jsonBuf.slice(0, 200)} ` +
 							`usage=${usage ? `${usage.completion_tokens ?? 0}/${maxOutputTokens}` : '—'}`
 					);
-					// Hard fail: incomplete streamed frames must not silently succeed.
-					// This commonly indicates provider streaming/structured-output incompatibility at larger sizes,
-					// or the model hit max_tokens before completing all decisions.
 					throw new Error(
 						`Incomplete streamed frame: ${completed}/${total} decisions. ` +
 							`model=${model} max_tokens=${maxOutputTokens} wantColor=${wantColor} ` +

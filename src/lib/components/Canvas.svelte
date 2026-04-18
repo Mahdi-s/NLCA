@@ -1907,12 +1907,28 @@
 	 * Push an external experiment grid into the Canvas for rendering.
 	 * Resizes the simulation if dimensions differ.
 	 */
-	export function setExperimentGrid(grid: Uint32Array, width: number, height: number) {
+	export function setExperimentGrid(
+		grid: Uint32Array,
+		width: number,
+		height: number,
+		colorsHex?: Array<string | null> | null,
+		colorStatus8?: Uint8Array | null
+	) {
 		if (!simulation || !ctx) return;
 		if (simState.gridWidth !== width || simState.gridHeight !== height) {
 			resize(width, height);
 		}
 		simulation.setCellData(grid);
+		if (nlcaUseCellColors && colorsHex && colorStatus8) {
+			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== width * height) {
+				nlcaCellColorsPacked = new Uint32Array(width * height);
+			}
+			mergePackedColors(nlcaCellColorsPacked, grid, colorsHex, colorStatus8);
+			simulation.setCellColorsPacked(nlcaCellColorsPacked);
+		} else {
+			nlcaCellColorsPacked = null;
+			simulation.clearCellColors();
+		}
 	}
 
 	function isMobileShareEnvironment() {

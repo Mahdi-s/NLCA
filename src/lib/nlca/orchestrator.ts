@@ -80,6 +80,38 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const DEFAULT_CONTEXT_WINDOW = 16_000; // Conservative default for unknown models
 
 /**
+ * SambaNova Hyperscale chunk size. Unique contexts are mathematically bounded by
+ * the neighborhood (2^9 = 512 for Moore binary), so once deduplication is applied
+ * the payload cannot exceed this many rows. We size the chunk above the max so
+ * all unique contexts go in a single request.
+ */
+const SAMBANOVA_CHUNK_SIZE = 1000;
+
+/**
+ * Force the configuration knobs that SambaNova Hyperscale mode requires for its
+ * dedup+batch strategy to pay off: full-frame batching, deduplication, compressed
+ * payload, and zero memory window (memory breaks dedup).
+ */
+function applyProviderDefaults(cfg: NlcaOrchestratorConfig): NlcaOrchestratorConfig {
+	if (cfg.apiProvider !== 'sambanova') {
+		// Frame-batched prompts are token-heavy; default to compressed payloads for all
+		// providers to reduce prompt size and lower quota pressure on long runs.
+		return {
+			...cfg,
+			compressPayload: true
+		};
+	}
+	return {
+		...cfg,
+		frameBatched: true,
+		deduplicateRequests: true,
+		compressPayload: true,
+		memoryWindow: 0,
+		chunkSize: SAMBANOVA_CHUNK_SIZE
+	};
+}
+
+/**
  * Estimate input tokens per cell.
  * - Compressed format: ~15-20 tokens per cell
  * - Verbose format: ~50-60 tokens per cell
@@ -210,19 +242,29 @@ export class NlcaOrchestrator {
 	private dedupeStats = { hits: 0, misses: 0 };
 
 	constructor(cfg: NlcaOrchestratorConfig) {
-		this.cfg = cfg;
-		this.effectiveConcurrency = Math.max(1, cfg.maxConcurrency);
-		console.log(`[NLCA] Orchestrator initialized with model: ${cfg.model.model}`);
+		this.cfg = applyProviderDefaults(cfg);
+		this.effectiveConcurrency = Math.max(1, this.cfg.maxConcurrency);
+		console.log(
+			`[NLCA] Orchestrator initialized provider=${this.cfg.apiProvider ?? 'openrouter'} model=${this.cfg.model.model}`
+		);
 	}
 
 	updateConfig(partial: Partial<NlcaOrchestratorConfig>) {
-		this.cfg = { ...this.cfg, ...partial };
-		if (partial.apiKey || partial.model || partial.cellTimeoutMs) {
-			console.log(`[NLCA] Orchestrator config updated, model: ${this.cfg.model.model}`);
+		this.cfg = applyProviderDefaults({ ...this.cfg, ...partial });
+		if (partial.apiKey || partial.model || partial.cellTimeoutMs || partial.apiProvider) {
+			console.log(
+				`[NLCA] Orchestrator config updated provider=${this.cfg.apiProvider ?? 'openrouter'} model=${this.cfg.model.model}`
+			);
 		}
 		if (typeof partial.maxConcurrency === 'number' && Number.isFinite(partial.maxConcurrency)) {
 			this.effectiveConcurrency = Math.max(1, Math.floor(partial.maxConcurrency));
 		}
+	}
+
+	private getActiveApiKey(): string {
+		return this.cfg.apiProvider === 'sambanova'
+			? this.cfg.sambaNovaApiKey ?? ''
+			: this.cfg.apiKey ?? '';
 	}
 
 	/**
@@ -232,6 +274,12 @@ export class NlcaOrchestrator {
 	 * @returns Optimal number of cells per chunk
 	 */
 	calculateChunkSize(wantColor: boolean, neighborhoodSize: number = 8): number {
+		// SambaNova mode: bypass token-window chunking — dedup caps unique contexts
+		// well below any reasonable limit (2^(neighbors+1) entries max).
+		if (this.cfg.apiProvider === 'sambanova') {
+			return this.cfg.chunkSize ?? SAMBANOVA_CHUNK_SIZE;
+		}
+
 		const estimate = calculateOptimalChunkSize(
 			this.cfg.model.model,
 			this.cfg.compressPayload === true,
@@ -239,7 +287,7 @@ export class NlcaOrchestrator {
 			this.cfg.memoryWindow ?? 0,
 			neighborhoodSize
 		);
-		
+
 		console.log(
 			`[NLCA] Chunk size calculation: model=${this.cfg.model.model}, ` +
 				`contextWindow=${estimate.modelContextWindow}, ` +
@@ -247,7 +295,7 @@ export class NlcaOrchestrator {
 				`outputPerCell=${estimate.estimatedOutputTokensPerCell}, ` +
 				`maxCellsPerChunk=${estimate.maxCellsPerChunk}`
 		);
-		
+
 		return estimate.maxCellsPerChunk;
 	}
 
@@ -422,7 +470,8 @@ export class NlcaOrchestrator {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					apiKey: this.cfg.apiKey,
+					apiProvider: this.cfg.apiProvider ?? 'openrouter',
+					apiKey: this.getActiveApiKey(),
 					model: this.cfg.model.model,
 					temperature: this.cfg.model.temperature,
 					maxOutputTokens: this.cfg.model.maxOutputTokens,
@@ -604,7 +653,8 @@ export class NlcaOrchestrator {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					apiKey: this.cfg.apiKey,
+					apiProvider: this.cfg.apiProvider ?? 'openrouter',
+					apiKey: this.getActiveApiKey(),
 					model: this.cfg.model.model,
 					temperature: this.cfg.model.temperature,
 					timeoutMs: this.cfg.cellTimeoutMs,
@@ -657,7 +707,8 @@ export class NlcaOrchestrator {
 				ok: false,
 				message: text || `HTTP ${res.status}`
 			});
-			throw new Error(text || `NLCA decideFrame failed (${res.status})`);
+			const msg = text ? `HTTP ${res.status}: ${text}` : `NLCA decideFrame failed (${res.status})`;
+			throw new Error(msg);
 		}
 
 		const data = (await res.json()) as {
@@ -669,17 +720,21 @@ export class NlcaOrchestrator {
 		const decisions = Array.isArray(data?.decisions) ? data.decisions : [];
 		const frameLatencyMs = Number.isFinite(data?.latencyMs) ? Number(data.latencyMs) : performance.now() - t0;
 
-		// Process API results and add to out map (which may already have cached results)
+		// Process API results and add to out map (which may already have cached results).
+		// SambaNova mode returns minified keys (i/s/c) — accept both formats.
 		for (const d of decisions) {
-			const cellId = Number((d as { cellId?: unknown }).cellId ?? NaN);
+			const rec = d as Record<string, unknown>;
+			const rawCellId = rec.cellId ?? rec.i;
+			const cellId = Number(rawCellId ?? NaN);
 			if (!Number.isFinite(cellId)) continue;
-			const state: CellState01 = Number((d as { state?: unknown }).state ?? 0) === 1 ? 1 : 0;
+			const rawState = rec.state ?? rec.s;
+			const state: CellState01 = Number(rawState ?? 0) === 1 ? 1 : 0;
 			let colorHex: string | undefined;
 			let colorStatus: CellColorStatus | undefined;
 
 			if (wantColor) {
-				const rawColor = typeof (d as { color?: unknown }).color === 'string' ? String((d as { color: string }).color) : '';
-				const normalized = rawColor ? rawColor.trim().toUpperCase() : '';
+				const rawColor = rec.color ?? rec.c;
+				const normalized = typeof rawColor === 'string' ? rawColor.trim().toUpperCase() : '';
 				if (/^#[0-9A-F]{6}$/.test(normalized)) {
 					colorHex = normalized;
 					colorStatus = 'valid';

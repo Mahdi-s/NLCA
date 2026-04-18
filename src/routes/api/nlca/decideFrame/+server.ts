@@ -1,4 +1,4 @@
-import { json, error, type RequestHandler } from '@sveltejs/kit';
+import { json, error, isHttpError, type RequestHandler } from '@sveltejs/kit';
 
 type CellState01 = 0 | 1;
 
@@ -21,7 +21,10 @@ type PromptConfigPayload = {
 	compressPayload?: boolean;
 };
 
+type ApiProvider = 'openrouter' | 'sambanova';
+
 type DecideFrameRequest = {
+	apiProvider?: ApiProvider;
 	apiKey: string;
 	model: string;
 	temperature?: number;
@@ -33,6 +36,17 @@ type DecideFrameRequest = {
 	cells: DecideFrameCell[];
 	promptConfig: PromptConfigPayload;
 };
+
+const SAMBANOVA_DEFAULT_MODEL = 'Meta-Llama-3.3-70B-Instruct';
+
+function resolveUpstream(provider: ApiProvider): string {
+	return provider === 'sambanova'
+		? 'https://api.sambanova.ai/v1/chat/completions'
+		: 'https://openrouter.ai/api/v1/chat/completions';
+}
+
+const SAMBANOVA_ZERO_THINKING_SYSTEM =
+	'CRITICAL: You are a synchronous cellular automata compute node. Apply the provided task rule to the input array. Output ONLY a valid JSON object matching the strict schema exactly. NO reasoning. NO chain-of-thought. NO markdown blocks (do not use ```json). Output the absolute bare minimum tokens required.';
 
 type OpenRouterChatResponse = {
 	id?: string;
@@ -51,11 +65,17 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+async function upstreamChatOnce(
+	fetchFn: typeof fetch,
+	provider: ApiProvider,
+	apiKey: string,
+	body: unknown,
+	timeoutMs: number
+): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn(resolveUpstream(provider), {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
@@ -103,9 +123,33 @@ function renderAdvancedTemplateForFrame(
 		.replace(/\{\{OUTPUT_CONTRACT\}\}/g, outputContract);
 }
 
-function buildSystemPrompt(cfg: PromptConfigPayload, width: number, height: number): string {
+function buildSystemPrompt(
+	cfg: PromptConfigPayload,
+	width: number,
+	height: number,
+	provider: ApiProvider
+): string {
 	const wantColor = cfg.cellColorHexEnabled === true;
 	const compressed = cfg.compressPayload === true;
+
+	// SambaNova Hyperscale: rigid zero-thinking directive. Bypass conversational
+	// templates entirely. We now use json_object mode (not json_schema) because
+	// strict mode on SambaNova rejects the whole response when Llama hallucinates
+	// — so the exact output shape must live in the prompt.
+	if (provider === 'sambanova') {
+		const schemaLine = wantColor
+			? 'Output EXACTLY this JSON shape: {"d":[{"i":<integer cellId>,"s":0 or 1,"c":"#RRGGBB uppercase hex"}, ...]}'
+			: 'Output EXACTLY this JSON shape: {"d":[{"i":<integer cellId>,"s":0 or 1}, ...]}';
+		return [
+			SAMBANOVA_ZERO_THINKING_SYSTEM,
+			'',
+			`Grid: ${width}×${height}.`,
+			`Input rows: [cellId, self, aliveCount, [neighbor_states_in_offset_order]]${wantColor ? ' (color mode ON).' : '.'}`,
+			schemaLine,
+			'Every input cellId must appear in the output exactly once. No extra keys, no duplicates, no non-JSON text.',
+			`Task: ${cfg.taskDescription}`
+		].join('\n');
+	}
 
 	const colorLine = wantColor ? 'Color mode is enabled: include a deterministic uppercase hex "#RRGGBB" per cell.' : '';
 	const formatLine = compressed
@@ -154,7 +198,29 @@ function buildSystemPrompt(cfg: PromptConfigPayload, width: number, height: numb
 function buildUserPayload(req: DecideFrameRequest) {
 	const wantColor = req.promptConfig?.cellColorHexEnabled === true;
 	const compressed = req.promptConfig?.compressPayload === true;
-	
+	const provider: ApiProvider = req.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
+
+	// SambaNova Hyperscale: max dedup efficiency. Strip absolute x/y coordinates
+	// (they break dedup across identical contexts), strip the task (already in the
+	// system prompt), and emit each row as a compact positional array.
+	// Format: [cellId, self, aliveCount, [neighborStates]]
+	if (provider === 'sambanova') {
+		return {
+			g: req.generation,
+			c: wantColor ? 1 : 0,
+			d: req.cells.map((cell) => {
+				let alive = 0;
+				const nStates: CellState01[] = [];
+				for (const nn of cell.neighborhood) {
+					const s = (nn[2] ?? 0) as CellState01;
+					if (s === 1) alive++;
+					nStates.push(s);
+				}
+				return [cell.cellId, cell.self, alive, nStates] as const;
+			})
+		};
+	}
+
 	if (compressed) {
 		// Compressed format: reduces token count by ~40-50%
 		// Cell format: [id, x, y, self, aliveCount, neighborStates]
@@ -206,7 +272,41 @@ function buildUserPayload(req: DecideFrameRequest) {
 	};
 }
 
-function buildJsonSchema(cellCount: number, wantColor: boolean) {
+function buildJsonSchema(cellCount: number, wantColor: boolean, provider: ApiProvider) {
+	// SambaNova Hyperscale: minified keys — d/i/s/c. Each extra character in a
+	// repeated key multiplies across thousands of decisions, so output volume
+	// matters far more here than readability.
+	if (provider === 'sambanova') {
+		const colorProp = wantColor
+			? {
+					c: { type: 'string', pattern: '^#[0-9A-F]{6}$' }
+				}
+			: {};
+		const required = wantColor ? ['i', 's', 'c'] : ['i', 's'];
+		return {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				d: {
+					type: 'array',
+					minItems: cellCount,
+					maxItems: cellCount,
+					items: {
+						type: 'object',
+						additionalProperties: false,
+						properties: {
+							i: { type: 'integer' },
+							s: { type: 'integer', enum: [0, 1] },
+							...colorProp
+						},
+						required
+					}
+				}
+			},
+			required: ['d']
+		} as const;
+	}
+
 	const colorProp = wantColor
 		? {
 				color: {
@@ -251,8 +351,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		// ignore
 	}
 
+	const provider: ApiProvider = payload?.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
 	const apiKey = typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : '';
-	const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const rawModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const model = rawModel || (provider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : '');
 	const width = Number(payload?.width ?? NaN);
 	const height = Number(payload?.height ?? NaN);
 	const generation = Number(payload?.generation ?? NaN);
@@ -267,46 +369,71 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	if (!promptConfig || typeof promptConfig.taskDescription !== 'string') throw error(400, 'Missing promptConfig.taskDescription');
 	if (cells.length === 0) throw error(400, 'No cells provided');
 
-	const temperature = typeof payload?.temperature === 'number' && Number.isFinite(payload.temperature) ? payload.temperature : 0;
+	// SambaNova is deterministic-only per the hyperscale contract.
+	const temperature =
+		provider === 'sambanova'
+			? 0
+			: typeof payload?.temperature === 'number' && Number.isFinite(payload.temperature)
+				? payload.temperature
+				: 0;
 	const timeoutMs = typeof payload?.timeoutMs === 'number' && Number.isFinite(payload.timeoutMs) ? payload.timeoutMs : 30_000;
 	
-	// Calculate a safe max_tokens estimate based on cell count and color mode.
-	// Each decision: ~30-35 chars without color (~8 tokens), ~40-45 chars with color (~11 tokens).
-	// Add 30% buffer for JSON structure overhead (array brackets, commas, etc.).
+	// Per-decision output budget — see decideFrameStream for the rationale.
+	// Empirical: ~17 tokens/decision real cost with color; budget +40%.
+	// Floor 4096, ceiling 12288 so we never blow small-context windows.
 	const wantColor = promptConfig.cellColorHexEnabled === true;
-	const tokensPerDecision = wantColor ? 11 : 8;
-	const estimatedTokens = Math.ceil(cells.length * tokensPerDecision * 1.3);
-	const userMaxTokens = typeof payload?.maxOutputTokens === 'number' && Number.isFinite(payload.maxOutputTokens) ? payload.maxOutputTokens : 8_192;
-	const maxOutputTokens = Math.max(userMaxTokens, estimatedTokens, 8_192);
-	const schema = buildJsonSchema(cells.length, wantColor);
+	const tokensPerDecision = wantColor ? 18 : 12;
+	const estimatedTokens = Math.ceil(cells.length * tokensPerDecision * 1.4);
+	const userMaxTokens =
+		typeof payload?.maxOutputTokens === 'number' && Number.isFinite(payload.maxOutputTokens)
+			? payload.maxOutputTokens
+			: 8_192;
+	const maxOutputTokens = Math.max(
+		4096,
+		Math.min(12_288, Math.max(userMaxTokens, estimatedTokens))
+	);
+	const schema = buildJsonSchema(cells.length, wantColor, provider);
 
 	const messages = [
-		{ role: 'system', content: buildSystemPrompt(promptConfig, width, height) },
-		{ role: 'user', content: JSON.stringify(buildUserPayload({ ...(payload as DecideFrameRequest), cells, promptConfig })) }
+		{ role: 'system', content: buildSystemPrompt(promptConfig, width, height, provider) },
+		{
+			role: 'user',
+			content: JSON.stringify(
+				buildUserPayload({ ...(payload as DecideFrameRequest), apiProvider: provider, cells, promptConfig })
+			)
+		}
 	];
 
-	const body = {
+	// SambaNova's strict `json_schema` mode is a *soft* constraint — when Llama
+	// hallucinates mid-generation (observed: Chinese SEO-spam tokens injected
+	// into `c` string values) the whole response gets rejected with "Model did
+	// not output valid JSON". Use the more forgiving `json_object` format on
+	// SambaNova; the schema shape is already described in the zero-thinking
+	// system prompt, and we parse minified `d/i/s/c` keys below either way.
+	const responseFormat =
+		provider === 'sambanova'
+			? { type: 'json_object' }
+			: {
+					type: 'json_schema',
+					json_schema: { name: 'nlca_frame_decisions', strict: true, schema }
+				};
+
+	const body: Record<string, unknown> = {
 		model,
 		temperature,
 		max_tokens: maxOutputTokens,
 		messages,
-		response_format: {
-			type: 'json_schema',
-			json_schema: {
-				name: 'nlca_frame_decisions',
-				strict: true,
-				schema
-			}
-		}
+		response_format: responseFormat
 	};
 
 	const maxAttempts = 3;
 	let attempt = 0;
+	let currentMaxTokens = maxOutputTokens;
 	const t0 = performance.now();
 	while (true) {
 		attempt++;
 		try {
-			const res = await openRouterChatOnce(fetch, apiKey, body, timeoutMs);
+			const res = await upstreamChatOnce(fetch, provider, apiKey, body, timeoutMs);
 
 			if (res.status === 429 && attempt < maxAttempts) {
 				const retryAfter = parseRetryAfterSeconds(res.headers.get('retry-after'));
@@ -319,10 +446,41 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 				await sleep(waitMs);
 				continue;
 			}
+			// Context-length overflow: halve max_tokens and retry.
+			if (res.status === 400 && attempt < maxAttempts) {
+				const text = await res.clone().text().catch(() => '');
+				if (/maximum context length|context_length|context window/i.test(text)) {
+					const next = Math.max(2048, Math.floor(currentMaxTokens / 2));
+					if (next < currentMaxTokens) {
+						console.log(
+							`[NLCA decideFrame] context-overflow max_tokens ${currentMaxTokens}→${next} attempt=${attempt}/${maxAttempts}`
+						);
+						currentMaxTokens = next;
+						body.max_tokens = next;
+						continue;
+					}
+				}
+				// Rate-limit can come back as 400 on SambaNova with "rate limit"
+				// in the body. Fail fast and surface as 429 — retrying burns
+				// the remaining daily quota.
+				if (/rate limit|rate_limit_exceeded/i.test(text)) {
+					console.log(`[NLCA decideFrame] rate-limited (no retry) body=${text.slice(0, 160)}`);
+					throw error(429, `Rate limit exceeded on ${provider}. ${text.slice(0, 200)}`);
+				}
+				// Invalid structured output from SambaNova when the model hallucinates
+				// mid-generation. Retrying at temperature=0 is pointless. Fail fast.
+				if (/Invalid structured output|Model did not output valid JSON/i.test(text)) {
+					console.log(`[NLCA decideFrame] invalid-structured-output (no retry) body=${text.slice(0, 160)}`);
+					throw error(
+						422,
+						`${provider} model output violated JSON contract (no retry). Try a different model or disable color mode. ${text.slice(0, 200)}`
+					);
+				}
+			}
 
 			if (!res.ok) {
 				const text = await res.text().catch(() => '');
-				throw error(res.status, text || `OpenRouter error (${res.status})`);
+				throw error(res.status, text || `${provider} error (${res.status})`);
 			}
 
 			const data = (await res.json()) as OpenRouterChatResponse;
@@ -331,11 +489,25 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 			// Structured outputs often returns parsed JSON; but some providers still return string.
 			const parsed = typeof content === 'string' ? JSON.parse(content) : content;
-			const decisions = (parsed as { decisions?: unknown }).decisions;
-			if (!Array.isArray(decisions) || decisions.length !== cells.length) {
+			// SambaNova uses minified keys (d/i/s/c); OpenRouter uses verbose.
+			const decisionsRaw =
+				provider === 'sambanova'
+					? (parsed as { d?: unknown }).d ?? (parsed as { decisions?: unknown }).decisions
+					: (parsed as { decisions?: unknown }).decisions;
+			if (!Array.isArray(decisionsRaw) || decisionsRaw.length !== cells.length) {
 				throw error(502, 'Model returned invalid decisions array');
 			}
-			
+
+			// Normalise minified rows back to the canonical shape {cellId,state,color?}
+			// so the client's parser doesn't need to know which provider ran.
+			const decisions = decisionsRaw.map((d) => {
+				const rec = d as Record<string, unknown>;
+				const cellId = Number(rec.cellId ?? rec.i ?? NaN);
+				const state = Number(rec.state ?? rec.s ?? 0) === 1 ? 1 : 0;
+				const color = typeof (rec.color ?? rec.c) === 'string' ? (rec.color ?? rec.c) : undefined;
+				return wantColor ? { cellId, state, color } : { cellId, state };
+			});
+
 			// Validate that every requested cellId appears exactly once.
 			const expectedIds = new Set<number>();
 			for (const c of cells) {
@@ -347,7 +519,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 			const seen = new Set<number>();
 			for (const d of decisions) {
-				const cellId = Number((d as { cellId?: unknown }).cellId ?? NaN);
+				const cellId = d.cellId;
 				if (!Number.isFinite(cellId) || !expectedIds.has(cellId)) {
 					throw error(502, 'Model returned invalid cellId');
 				}
@@ -359,11 +531,17 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			return json({
 				id: data?.id ?? null,
 				model,
+				provider,
 				usage: data?.usage ?? null,
 				latencyMs,
 				decisions
 			});
 		} catch (e) {
+			if (isHttpError(e)) {
+				// Preserve explicit upstream status classification (e.g. 429 rate limit)
+				// and avoid retrying known terminal failures as opaque 502s.
+				throw e;
+			}
 			const msg = e instanceof Error ? e.message : String(e);
 			if (attempt < maxAttempts) {
 				const waitMs = Math.round(200 * 2 ** (attempt - 1) + Math.random() * 100);

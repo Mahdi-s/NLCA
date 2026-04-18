@@ -8,17 +8,28 @@ type DecideCell = {
 	messages: Msg[];
 };
 
+type ApiProvider = 'openrouter' | 'sambanova';
+
 type DecideRequest = {
+	apiProvider?: ApiProvider;
 	apiKey: string;
 	model: string;
 	temperature?: number;
 	maxOutputTokens?: number;
 	timeoutMs?: number;
-	/** Max concurrent upstream OpenRouter calls (within this request). */
+	/** Max concurrent upstream calls (within this request). */
 	maxConcurrency?: number;
 	/** Cells to decide in this batch. */
 	cells: DecideCell[];
 };
+
+const SAMBANOVA_DEFAULT_MODEL = 'Meta-Llama-3.3-70B-Instruct';
+
+function resolveUpstream(provider: ApiProvider): { url: string; referer: string } {
+	return provider === 'sambanova'
+		? { url: 'https://api.sambanova.ai/v1/chat/completions', referer: 'http://localhost' }
+		: { url: 'https://openrouter.ai/api/v1/chat/completions', referer: 'http://localhost' };
+}
 
 type OpenRouterChatResponse = {
 	id?: string;
@@ -57,17 +68,24 @@ function parseRetryAfterSeconds(v: string | null): number | null {
 	return null;
 }
 
-async function openRouterChatOnce(fetchFn: typeof fetch, apiKey: string, body: unknown, timeoutMs: number): Promise<Response> {
+async function upstreamChatOnce(
+	fetchFn: typeof fetch,
+	provider: ApiProvider,
+	apiKey: string,
+	body: unknown,
+	timeoutMs: number
+): Promise<Response> {
 	const ctrl = new AbortController();
 	const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
+	const { url, referer } = resolveUpstream(provider);
 	try {
-		return await fetchFn('https://openrouter.ai/api/v1/chat/completions', {
+		return await fetchFn(url, {
 			method: 'POST',
 			signal: ctrl.signal,
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
 				'Content-Type': 'application/json',
-				'HTTP-Referer': 'http://localhost',
+				'HTTP-Referer': referer,
 				'X-Title': 'games-of-life-nlca'
 			},
 			body: JSON.stringify(body)
@@ -85,15 +103,23 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		// ignore
 	}
 
+	const provider: ApiProvider = payload?.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
 	const apiKey = typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : '';
-	const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const rawModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
+	const model = rawModel || (provider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : '');
 	const cells = Array.isArray(payload?.cells) ? payload!.cells : [];
 
 	if (!apiKey) throw error(400, 'Missing apiKey');
 	if (!model) throw error(400, 'Missing model');
 	if (cells.length === 0) throw error(400, 'No cells provided');
 
-	const temperature = typeof payload?.temperature === 'number' && Number.isFinite(payload.temperature) ? payload.temperature : 0;
+	// SambaNova runs deterministic-only; OpenRouter respects the user-supplied value.
+	const temperature =
+		provider === 'sambanova'
+			? 0
+			: typeof payload?.temperature === 'number' && Number.isFinite(payload.temperature)
+				? payload.temperature
+				: 0;
 	const maxOutputTokens =
 		typeof payload?.maxOutputTokens === 'number' && Number.isFinite(payload.maxOutputTokens) ? payload.maxOutputTokens : 64;
 	const timeoutMs = typeof payload?.timeoutMs === 'number' && Number.isFinite(payload.timeoutMs) ? payload.timeoutMs : 30_000;
@@ -127,7 +153,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		while (true) {
 			attempt++;
 			try {
-				const res = await openRouterChatOnce(fetch, apiKey, body, timeoutMs);
+				const res = await upstreamChatOnce(fetch, provider, apiKey, body, timeoutMs);
 				if (res.status === 429 && attempt < maxAttempts) {
 					const retryAfter = parseRetryAfterSeconds(res.headers.get('retry-after'));
 					const waitMs = Math.max(250, Math.round(((retryAfter ?? 1) * 1000) + Math.random() * 250));
