@@ -50,6 +50,7 @@ export class NlcaStepper {
 	private frameHistory: Array<CellState01[]> | null = null;
 	private frameBatchedFrames = 0;
 	private frameBatchedFallbacks = 0;
+	private prevColorsHex: Array<string | null> | null = null;
 
 	constructor(cfg: NlcaStepperConfig, agentManager: CellAgentManager) {
 		this.cfg = cfg;
@@ -78,6 +79,7 @@ export class NlcaStepper {
 		// Clear agent history for new run
 		this.agentManager.clearAllHistory();
 		this.orchestrator.resetCallCount();
+		this.prevColorsHex = null;
 		console.log(`[NLCA] New run started: ${runId}`);
 	}
 
@@ -88,6 +90,7 @@ export class NlcaStepper {
 	resetAgentSessions(): void {
 		this.agentManager.clearAllHistory();
 		this.orchestrator.clearDebugLog();
+		this.prevColorsHex = null;
 		console.log(`[NLCA] Agent sessions reset - new prompt will take effect`);
 	}
 
@@ -141,11 +144,16 @@ export class NlcaStepper {
 		return this.frameHistory;
 	}
 
-	private buildContexts(prev: Uint32Array, width: number, height: number): CellContext[] {
+	private buildContexts(
+		prev: Uint32Array,
+		width: number,
+		height: number,
+		prevColors?: Array<string | null>
+	): CellContext[] {
 		const cells: CellContext[] = [];
 		for (let y = 0; y < height; y++) {
 			for (let x = 0; x < width; x++) {
-				cells.push(extractCellContext(prev, width, height, x, y, this.cfg.neighborhood, this.cfg.boundary));
+				cells.push(extractCellContext(prev, width, height, x, y, this.cfg.neighborhood, this.cfg.boundary, prevColors));
 			}
 		}
 		return cells;
@@ -183,7 +191,12 @@ export class NlcaStepper {
 				x: c.x,
 				y: c.y,
 				self: c.self,
-				neighbors: c.neighbors.map((n) => [n.dx, n.dy, n.state] as [number, number, CellState01]),
+				prevColor: wantColor ? (c.prevColor ?? null) : undefined,
+				neighbors: c.neighbors.map((n) =>
+					wantColor
+						? ([n.dx, n.dy, n.state, n.prevColor ?? null] as [number, number, CellState01, string | null])
+						: ([n.dx, n.dy, n.state] as [number, number, CellState01])
+				),
 				history: memoryWindow > 0 ? history[c.id]!.slice(-memoryWindow) : undefined
 			}));
 
@@ -253,6 +266,7 @@ export class NlcaStepper {
 							x: c.x,
 							y: c.y,
 							self: c.self,
+							prevColor: c.prevColor,
 							neighborhood: c.neighbors,
 							history: c.history
 						})),
@@ -472,7 +486,8 @@ export class NlcaStepper {
 			x: number;
 			y: number;
 			self: CellState01;
-			neighbors: Array<[number, number, CellState01]>;
+			prevColor?: string | null;
+			neighbors: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>;
 			history?: CellState01[];
 		}>,
 		callbacks?: NlcaProgressCallback,
@@ -709,7 +724,8 @@ export class NlcaStepper {
 			this.agentManager.reset(width, height);
 		}
 
-		const contexts = this.buildContexts(prev, width, height);
+		const wantColor = promptConfig?.cellColorHexEnabled === true;
+		const contexts = this.buildContexts(prev, width, height, wantColor ? (this.prevColorsHex ?? undefined) : undefined);
 
 		const latency8 = new Uint8Array(expected);
 		const changed01 = new Uint8Array(expected);
@@ -724,6 +740,11 @@ export class NlcaStepper {
 			callbacks,
 			promptConfig
 		);
+
+		// Store colors for next frame so cells get prevColor context
+		if (wantColor) {
+			this.prevColorsHex = colorsHex ?? null;
+		}
 
 		const next = new Uint32Array(expected);
 		let changedCount = 0;

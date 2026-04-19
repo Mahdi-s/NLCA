@@ -233,7 +233,7 @@ export function calculateOptimalChunkSize(
  */
 export function hashCellContext(
 	self: CellState01,
-	neighbors: Array<[number, number, CellState01]>,
+	neighbors: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>,
 	history?: CellState01[]
 ): string {
 	// Sort neighbors by offset to ensure consistent ordering
@@ -677,7 +677,8 @@ export class NlcaOrchestrator {
 				x: number;
 				y: number;
 				self: CellState01;
-				neighbors: Array<[number, number, CellState01]>;
+				prevColor?: string | null;
+				neighbors: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>;
 				history?: CellState01[];
 			}>;
 			runId?: string;
