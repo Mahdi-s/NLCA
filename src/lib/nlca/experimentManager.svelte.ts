@@ -685,6 +685,14 @@ export class ExperimentManager {
 		const totalFrames = exp.progress.current;
 		this.playback = { id, currentFrame: 0, totalFrames, isPaused: false };
 
+		// Pre-load all frames so playback doesn't stall on per-frame HTTP fetches.
+		const frames: Array<Awaited<ReturnType<typeof this.fetchJsonlFrame>>> = [];
+		for (let gen = 1; gen <= totalFrames; gen++) {
+			if (this.playbackToken !== token) return;
+			frames.push(await this.fetchJsonlFrame(id, gen));
+		}
+		if (this.playbackToken !== token) return;
+
 		let prevGrid: Uint32Array | null = null;
 		let prevColorsHex: Array<string | null> | null = null;
 
@@ -696,8 +704,7 @@ export class ExperimentManager {
 			}
 			if (this.playbackToken !== token || !this.playback) return;
 
-			const frame = await this.fetchJsonlFrame(id, gen);
-			if (this.playbackToken !== token) return;
+			const frame = frames[gen - 1];
 			if (!frame) continue;
 
 			const totalCells = frame.width * frame.height;
@@ -716,18 +723,12 @@ export class ExperimentManager {
 				frameMs
 			);
 
-			// Pad to the target frame duration even when the diff is tiny/empty,
-			// so successive identical frames still pace with the user's speed
-			// setting rather than flashing past in one animation frame.
+			// Pad to the target frame duration so identical frames still pace with
+			// the user's speed setting rather than flashing past instantly.
 			if (this.playbackToken === token && this.playback && !this.playback.isPaused) {
 				const elapsed = performance.now() - frameStart;
 				const hold = Math.max(0, frameMs - elapsed);
 				if (hold > 8) await new Promise((r) => setTimeout(r, hold));
-			}
-
-			// 3-second viewing pause so each frame can be evaluated before the next.
-			if (gen < totalFrames && this.playbackToken === token && this.playback && !this.playback.isPaused) {
-				await new Promise((r) => setTimeout(r, 3000));
 			}
 
 			if (this.playbackToken !== token || !this.playback) return;
@@ -952,7 +953,7 @@ export class ExperimentManager {
 		if (!(id in this.experiments)) return;
 		// Stop any in-progress playback when switching experiments so the canvas
 		// $effect isn't blocked and the new experiment renders immediately.
-		if (this.playback && this.playback.id !== id) this.stopPlayback();
+		if (this.playback) this.stopPlayback();
 		this.activeId = id;
 		const exp = this.experiments[id];
 		if (!exp) return;

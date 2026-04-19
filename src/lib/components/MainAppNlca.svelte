@@ -74,8 +74,8 @@
 	// During playback we step out of the way entirely: the playback loop drives
 	// the canvas directly via animateTransition(), and we don't want to snap
 	// the final frame in mid-animation.
-	let lastRenderedExpId = $state<string | null>(null);
-	let lastRenderedGeneration = $state<number>(-1);
+	let lastRenderedExpId: string | null = null;
+	let lastRenderedGeneration: number = -1;
 	$effect(() => {
 		if (!canvas) return;
 		if (experimentManager.playback) return;
