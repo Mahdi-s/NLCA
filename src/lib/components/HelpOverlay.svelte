@@ -93,8 +93,14 @@
 							<h3>Shortcuts</h3>
 							<div class="shortcut"><kbd>Enter</kbd><span>Play / pause / create experiment</span></div>
 							<div class="shortcut"><kbd>E</kbd><span>Toggle experiments sidebar</span></div>
+							<div class="shortcut"><kbd>R</kbd><span>Hide / show the HUD + toolbar for a clean canvas view</span></div>
 							<div class="shortcut"><kbd>I</kbd><span>Initialize grid pattern</span></div>
+							<div class="shortcut"><kbd>S</kbd><span>Step one generation</span></div>
 							<div class="shortcut"><kbd>D</kbd><span>Clear grid</span></div>
+							<div class="shortcut"><kbd>G</kbd><span>Toggle grid lines</span></div>
+							<div class="shortcut"><kbd>F</kbd><span>Reset view (fit grid)</span></div>
+							<div class="shortcut"><kbd>,</kbd> <kbd>.</kbd><span>Slow down / speed up</span></div>
+							<div class="shortcut"><kbd>?</kbd><span>Toggle this help panel</span></div>
 							<div class="shortcut"><kbd>Esc</kbd><span>Close any open panel</span></div>
 						</section>
 

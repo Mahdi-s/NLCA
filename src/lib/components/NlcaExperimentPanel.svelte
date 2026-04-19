@@ -71,9 +71,32 @@
 					<span>{exp.progress.current}/{exp.progress.target}</span>
 					<span>{formatTime(exp.createdAt)}</span>
 				</div>
-				{#if exp.errorMessage}
-					<div class="exp-error">{exp.errorMessage}</div>
-				{/if}
+				<div class="exp-cost" title={
+					exp.pricingUnknown && exp.totalCost === 0
+						? "No public pricing for this model"
+						: exp.status === 'completed'
+							? `Final cost from actual usage. Initial projection: $${exp.estimatedCost.toFixed(4)}.`
+							: `Live cost from actual usage. Projected full-run cost: $${exp.estimatedCost.toFixed(4)}.`
+				}>
+					{#if exp.pricingUnknown && exp.totalCost === 0}
+						<span class="cost-label">Cost</span> <span class="cost-val muted">—</span>
+					{:else if exp.status === 'completed'}
+						<span class="cost-label">Cost</span>
+						<span class="cost-val final">${exp.totalCost.toFixed(4)}</span>
+					{:else}
+						<span class="cost-label">Cost</span>
+						<span class="cost-val">${exp.totalCost.toFixed(4)}</span>
+						{#if exp.estimatedCost > 0}
+							<span class="cost-val muted">/ ~${exp.estimatedCost.toFixed(4)}</span>
+						{/if}
+					{/if}
+				</div>
+			{#if exp.errorMessage}
+				<div class="exp-error">{exp.errorMessage}</div>
+			{/if}
+			{#if exp.noTapeData}
+				<div class="exp-no-data">Frame data unavailable (database file missing)</div>
+			{/if}
 				<div class="exp-actions">
 					{#if exp.status === 'running'}
 						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.pauseExperiment(exp.id); }}>Pause</button>
@@ -260,6 +283,34 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.exp-no-data {
+		font-size: 10px;
+		color: #f59e0b;
+		font-style: italic;
+	}
+
+	.exp-cost {
+		font-size: 10px;
+		font-variant-numeric: tabular-nums;
+		color: var(--ui-text, #888);
+		display: flex;
+		align-items: baseline;
+		gap: 4px;
+	}
+	.exp-cost .cost-label {
+		color: var(--ui-text, #888);
+	}
+	.exp-cost .cost-val {
+		color: #22c55e;
+	}
+	.exp-cost .cost-val.final {
+		color: #3b82f6;
+	}
+	.exp-cost .cost-val.muted {
+		color: var(--ui-text, #888);
+		font-weight: 400;
 	}
 
 	.exp-actions {

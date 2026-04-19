@@ -46,6 +46,10 @@
 	// Experiment Manager
 	const experimentManager = new ExperimentManager();
 	let showExperimentPanel = $state(false);
+	/** Hide the HUD (top-left info box) and the Controls toolbar for a clean
+	 * canvas view. Toggled with R so users can grab an uncluttered screenshot
+	 * or recording without the UI chrome in the way. */
+	let chromeHidden = $state(false);
 
 	// Load experiments from index on mount
 	$effect(() => {
@@ -54,19 +58,72 @@
 
 	let canvas: Canvas;
 
-	// Push active experiment's grid to Canvas whenever it changes
+	// Push active experiment's grid to Canvas whenever it changes. Also clear the
+	// canvas whenever the active experiment is switched to one that hasn't
+	// loaded its grid yet (either because a rehydrate is in flight or the tape
+	// is missing) — otherwise the previously-active experiment's pixels ghost
+	// through and the user can't tell the switch actually landed.
+	//
+	// During playback we step out of the way entirely: the playback loop drives
+	// the canvas directly via animateTransition(), and we don't want to snap
+	// the final frame in mid-animation.
+	let lastRenderedExpId = $state<string | null>(null);
+	let lastRenderedGeneration = $state<number>(-1);
 	$effect(() => {
+		if (!canvas) return;
+		if (experimentManager.playback) return;
 		const active = experimentManager.active;
-		if (active?.currentGrid && canvas) {
-			canvas.setExperimentGrid(
-				active.currentGrid,
-				active.config.gridWidth,
-				active.config.gridHeight,
-				active.currentColorsHex,
-				active.currentColorStatus8
-			);
+		const id = active?.id ?? null;
+		const gen = active?.currentGeneration ?? -1;
+		const gridPresent = active?.currentGrid != null;
+
+		if (!active) {
+			if (lastRenderedExpId !== null) {
+				lastRenderedExpId = null;
+				lastRenderedGeneration = -1;
+			}
+			return;
 		}
+
+		if (!gridPresent) {
+			if (lastRenderedExpId !== id) {
+				canvas.clearExperimentGrid(active.config.gridWidth, active.config.gridHeight);
+				lastRenderedExpId = id;
+				lastRenderedGeneration = -1;
+			}
+			return;
+		}
+
+		canvas.setExperimentGrid(
+			active.currentGrid!,
+			active.config.gridWidth,
+			active.config.gridHeight,
+			active.currentColorsHex,
+			active.currentColorStatus8
+		);
+		lastRenderedExpId = id;
+		lastRenderedGeneration = gen;
 	});
+
+	/** Map the user's speed knob (steps-per-second, 1..MAX_SPEED) to a per-frame
+	 * playback duration. Slower speeds get more time to stagger; faster speeds
+	 * compress the stagger window but still leave enough for the fade. */
+	function playbackFrameMs(): number {
+		const sps = Math.max(1, Math.min(1000, simState.speed));
+		return Math.max(280, Math.min(2400, Math.round(1500 / Math.sqrt(sps))));
+	}
+
+	function runPlayback() {
+		const active = experimentManager.active;
+		if (!active || !canvas) return;
+		void experimentManager.startPlayback(
+			active.id,
+			(cur, next, curC, nextC, w, h, ms) =>
+				canvas.animateTransition(cur, next, curC, nextC, w, h, ms),
+			playbackFrameMs,
+			() => canvas?.cancelPlaybackAnimation?.()
+		);
+	}
 
 	function configFromCurrentSettings(): ExperimentConfig {
 		const provider = nlcaSettings.apiProvider;
@@ -101,13 +158,40 @@
 
 	function handlePlay() {
 		const active = experimentManager.active;
-		if (active) {
-			if (active.status === 'running') {
-				experimentManager.pauseExperiment(active.id);
-			} else if (active.status === 'paused') {
-				experimentManager.resumeExperiment(active.id);
-			}
+		const playback = experimentManager.playback;
+
+		if (playback) {
+			// Playback in progress — Play toggles its pause state.
+			if (playback.isPaused) experimentManager.resumePlayback();
+			else experimentManager.pausePlayback();
+			return;
+		}
+
+		if (!active) {
+			experimentManager.createExperiment(configFromCurrentSettings()).catch((err) => {
+				console.error('[MainAppNlca] Failed to create experiment:', err);
+			});
+			showExperimentPanel = true;
+			return;
+		}
+
+		if (active.status === 'running') {
+			experimentManager.pauseExperiment(active.id);
+			return;
+		}
+
+		// paused / completed / error: replay saved frames with the fade-in
+		// stagger animation when we have frames on disk. Falls back to live
+		// compute behaviour only when there's nothing to play.
+		if (active.progress.current > 0) {
+			runPlayback();
+			return;
+		}
+
+		if (active.status === 'paused') {
+			experimentManager.resumeExperiment(active.id);
 		} else {
+			experimentManager.activeId = null;
 			experimentManager.createExperiment(configFromCurrentSettings()).catch((err) => {
 				console.error('[MainAppNlca] Failed to create experiment:', err);
 			});
@@ -181,10 +265,23 @@
 	async function handleSeek(generation: number) {
 		const active = experimentManager.active;
 		if (!active) return;
+		if (experimentManager.playback) experimentManager.stopPlayback();
 		if (active.status === 'running') {
 			await experimentManager.pauseExperiment(active.id);
 		}
 		await experimentManager.seekToGeneration(active.id, generation);
+	}
+
+	async function handleSeekPrev() {
+		const active = experimentManager.active;
+		if (!active || active.currentGeneration <= 1) return;
+		await handleSeek(active.currentGeneration - 1);
+	}
+
+	async function handleSeekNext() {
+		const active = experimentManager.active;
+		if (!active || active.currentGeneration >= active.progress.current) return;
+		await handleSeek(active.currentGeneration + 1);
 	}
 	
 	function handleStartBatchRun(generations: number) {
@@ -225,6 +322,11 @@
 				break;
 			case 'KeyE':
 				showExperimentPanel = !showExperimentPanel;
+				break;
+			case 'KeyR':
+				if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+					chromeHidden = !chromeHidden;
+				}
 				break;
 			case 'KeyI':
 				toggleModal('initialize');
@@ -276,11 +378,23 @@
 
 	<InfoOverlay />
 
-	<NlcaHUD
-		experiment={experimentManager.active}
-		onViewPrompt={openNlcaPromptViewer}
-	/>
+	{#if !chromeHidden}
+		<NlcaHUD
+			experiment={experimentManager.active}
+			onViewPrompt={openNlcaPromptViewer}
+		/>
+	{/if}
 
+	{#if chromeHidden}
+		<button
+			type="button"
+			class="chrome-reveal-hint"
+			onclick={() => (chromeHidden = false)}
+			aria-label="Show controls (R)"
+		>Press R to restore controls</button>
+	{/if}
+
+	{#if !chromeHidden}
 	<ControlsNlca
 		onclear={handleClear}
 		oninitialize={handleInitialize}
@@ -300,12 +414,16 @@
 		experimentActive={true}
 		experimentStatus={experimentManager.active?.status ?? 'paused'}
 		activeExperiment={experimentManager.active}
+		playbackActive={experimentManager.playback != null && !experimentManager.playback.isPaused}
 		onexperimentpause={handlePlay}
 		onexperimentresume={handlePlay}
 		onseek={handleSeek}
+		onseekprev={handleSeekPrev}
+		onseeknext={handleSeekNext}
 		onexperiments={() => showExperimentPanel = !showExperimentPanel}
 		showExperimentPanel={showExperimentPanel}
 	/>
+	{/if}
 
 	{#if showHelp}
 		<HelpOverlay variant="nlca" onclose={() => closeModal('help')} onstarttour={() => {}} />
@@ -364,6 +482,27 @@
 </main>
 
 <style>
+	.chrome-reveal-hint {
+		position: fixed;
+		left: 50%;
+		bottom: 18px;
+		transform: translateX(-50%);
+		font-size: 11px;
+		padding: 6px 12px;
+		border-radius: 999px;
+		background: rgba(12, 12, 18, 0.55);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		color: rgba(255, 255, 255, 0.55);
+		cursor: pointer;
+		z-index: 400;
+		transition: opacity 0.2s, color 0.15s;
+		opacity: 0.6;
+	}
+	.chrome-reveal-hint:hover {
+		color: rgba(255, 255, 255, 0.9);
+		opacity: 1;
+	}
+
 	.app {
 		position: fixed;
 		inset: 0;

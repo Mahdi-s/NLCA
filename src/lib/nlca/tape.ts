@@ -82,6 +82,15 @@ class ServerDbHandle implements DbHandle {
 		return res.json();
 	}
 
+	async fileExists(): Promise<boolean> {
+		try {
+			const { exists } = await this.call('exists');
+			return Boolean(exists);
+		} catch {
+			return false;
+		}
+	}
+
 	async exec(sql: string): Promise<void> {
 		await this.call('exec', { sql });
 	}
@@ -138,6 +147,7 @@ export interface NlcaTapeFrame {
 	createdAt: number;
 	stateBits: Uint8Array;
 	metrics?: Uint8Array;
+	colorsHex?: Array<string | null>;
 }
 
 export function pack01ToBitset(grid01: Uint32Array): Uint8Array {
@@ -175,6 +185,52 @@ export function decodeMetrics(metricsBlob: Uint8Array, nCells: number): NlcaCell
 	};
 }
 
+/**
+ * Serialise one NLCA frame to a single-line JSON string suitable for a `.jsonl`
+ * tape. Emits only alive cells (state=1) to keep file size bounded — dead cells
+ * are implicit from the grid dimensions. Colours and metrics are optional.
+ */
+export function buildFrameLine(
+	generation: number,
+	createdAt: number,
+	grid01: Uint32Array,
+	width: number,
+	height: number,
+	colorsHex?: Array<string | null> | null,
+	metrics?: NlcaCellMetricsFrame | null
+): string {
+	const cells: Array<[number, number, string | null]> = [];
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const idx = y * width + x;
+			if ((grid01[idx] ?? 0) === 0) continue;
+			const hex = colorsHex?.[idx] ?? null;
+			cells.push([x, y, hex]);
+		}
+	}
+	let metricsSummary: { avgLatencyMs: number; changedCount: number } | undefined;
+	if (metrics && metrics.latency8.length > 0) {
+		let latSum = 0;
+		for (let i = 0; i < metrics.latency8.length; i++) latSum += metrics.latency8[i] ?? 0;
+		let changed = 0;
+		for (let i = 0; i < metrics.changed01.length; i++) changed += metrics.changed01[i] ?? 0;
+		metricsSummary = {
+			avgLatencyMs: Math.round((latSum / metrics.latency8.length) * 10),
+			changedCount: changed
+		};
+	}
+	const record: {
+		generation: number;
+		createdAt: number;
+		width: number;
+		height: number;
+		cells: Array<[number, number, string | null]>;
+		metrics?: { avgLatencyMs: number; changedCount: number };
+	} = { generation, createdAt, width, height, cells };
+	if (metricsSummary) record.metrics = metricsSummary;
+	return JSON.stringify(record);
+}
+
 // ---------------------------------------------------------------------------
 // NlcaTape
 // ---------------------------------------------------------------------------
@@ -193,6 +249,16 @@ export class NlcaTape {
 		this.db = dev ? new ServerDbHandle(this.dbPath) : await makeBrowserHandle(this.dbPath);
 		await this.migrate();
 		this.ready = true;
+	}
+
+	/**
+	 * Returns false when running in dev mode and the backing file does not exist
+	 * on disk yet.  Calling this before init() lets callers skip creating a phantom
+	 * empty database for experiment tapes whose data was never written.
+	 */
+	async fileExists(): Promise<boolean> {
+		if (!dev) return true; // Browser/OPFS — always try to open
+		return new ServerDbHandle(this.dbPath).fileExists();
 	}
 
 	private async migrate(): Promise<void> {
@@ -224,6 +290,11 @@ export class NlcaTape {
 		);
 		try {
 			await this.db.exec(`ALTER TABLE nlca_runs ADD COLUMN config_json TEXT`);
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			await this.db.exec(`ALTER TABLE nlca_frames ADD COLUMN colors_json TEXT`);
 		} catch {
 			// Column already exists — ignore
 		}
@@ -259,24 +330,33 @@ export class NlcaTape {
 
 	async appendFrame(frame: NlcaTapeFrame): Promise<void> {
 		await this.init();
+		const colorsJson = frame.colorsHex ? JSON.stringify(frame.colorsHex) : null;
 		await this.db!.run(
-			`INSERT OR REPLACE INTO nlca_frames(run_id, generation, created_at, state_bits, metrics)
-			 VALUES(?, ?, ?, ?, ?)`,
-			[frame.runId, frame.generation, frame.createdAt, frame.stateBits, frame.metrics ?? null]
+			`INSERT OR REPLACE INTO nlca_frames(run_id, generation, created_at, state_bits, metrics, colors_json)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			[frame.runId, frame.generation, frame.createdAt, frame.stateBits, frame.metrics ?? null, colorsJson]
 		);
 	}
 
 	async getFrame(runId: string, generation: number): Promise<NlcaTapeFrame | null> {
 		await this.init();
 		const row = await this.db!.get(
-			`SELECT created_at, state_bits, metrics FROM nlca_frames WHERE run_id = ? AND generation = ?`,
+			`SELECT created_at, state_bits, metrics, colors_json FROM nlca_frames WHERE run_id = ? AND generation = ?`,
 			[runId, generation]
 		);
 		if (!row) return null;
 		const createdAt = Number(row[0] ?? 0);
 		const stateBits = row[1] as Uint8Array;
 		const metrics = row[2] instanceof Uint8Array ? row[2] : undefined;
-		return { runId, generation, createdAt, stateBits, metrics };
+		let colorsHex: Array<string | null> | undefined;
+		if (typeof row[3] === 'string' && row[3]) {
+			try {
+				colorsHex = JSON.parse(row[3]) as Array<string | null>;
+			} catch {
+				colorsHex = undefined;
+			}
+		}
+		return { runId, generation, createdAt, stateBits, metrics, colorsHex };
 	}
 
 	async getLatestGeneration(runId: string): Promise<number> {

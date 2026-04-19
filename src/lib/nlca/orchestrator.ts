@@ -2,6 +2,7 @@ import { base } from '$app/paths';
 import type { NlcaCellRequest, NlcaOrchestratorConfig, CellColorStatus, CellState01 } from './types.js';
 import { buildCellSystemPrompt, buildCellUserPrompt, parseCellResponse, type PromptConfig } from './prompt.js';
 import type { CellAgent } from './agentManager.js';
+import { computeCallCost, getModelPricing, type ModelPricing } from './costEstimator.js';
 
 export interface CellDecisionResult {
 	state: CellState01;
@@ -88,6 +89,29 @@ const DEFAULT_CONTEXT_WINDOW = 16_000; // Conservative default for unknown model
 const SAMBANOVA_CHUNK_SIZE = 1000;
 
 /**
+ * Per-model chunk-size caps for SambaNova. The default (1000) assumes highly
+ * dedup-able inputs — when the grid is in colour mode every (x, y) is unique,
+ * so the model has to emit one full decision per cell in a single JSON array.
+ * Some models under-generate past a certain length (observed with Llama-3.3:
+ * returns ~300 items then emits `finish_reason=stop` and drops the rest),
+ * which surfaces as HTTP 502 `Model returned invalid decisions array`. Cap
+ * known-problematic models here.
+ */
+const SAMBANOVA_MODEL_CHUNK_CAPS: Array<{ match: RegExp; cap: number }> = [
+	{ match: /llama/i, cap: 200 },
+	{ match: /qwen/i, cap: 300 },
+	{ match: /deepseek/i, cap: 400 }
+];
+
+function sambanovaChunkSize(model: string | undefined): number {
+	if (!model) return SAMBANOVA_CHUNK_SIZE;
+	for (const { match, cap } of SAMBANOVA_MODEL_CHUNK_CAPS) {
+		if (match.test(model)) return Math.min(SAMBANOVA_CHUNK_SIZE, cap);
+	}
+	return SAMBANOVA_CHUNK_SIZE;
+}
+
+/**
  * Force the configuration knobs that SambaNova Hyperscale mode requires for its
  * dedup+batch strategy to pay off: full-frame batching, deduplication, compressed
  * payload, and zero memory window (memory breaks dedup).
@@ -107,7 +131,7 @@ function applyProviderDefaults(cfg: NlcaOrchestratorConfig): NlcaOrchestratorCon
 		deduplicateRequests: true,
 		compressPayload: true,
 		memoryWindow: 0,
-		chunkSize: SAMBANOVA_CHUNK_SIZE
+		chunkSize: sambanovaChunkSize(cfg.model?.model)
 	};
 }
 
@@ -142,6 +166,16 @@ export interface ChunkSizeEstimate {
 }
 
 /**
+ * Hard ceiling on `max_tokens` enforced by `src/routes/api/nlca/decideFrame/+server.ts`
+ * and `decideFrameStream/+server.ts`. The server clamps the output budget at this
+ * many tokens regardless of model context size (structured-output APIs often cap
+ * here), so the client must not ship a chunk that would need more than this to
+ * produce a full decisions array — otherwise the model truncates mid-stream and
+ * we see "Incomplete streamed frame: N/M decisions" errors.
+ */
+const SERVER_OUTPUT_CEILING = 12_288;
+
+/**
  * Calculate optimal chunk size based on model context window and cell parameters.
  */
 export function calculateOptimalChunkSize(
@@ -153,29 +187,35 @@ export function calculateOptimalChunkSize(
 ): ChunkSizeEstimate {
 	// Get context window for the model
 	const modelContextWindow = MODEL_CONTEXT_WINDOWS[modelId] ?? DEFAULT_CONTEXT_WINDOW;
-	
+
 	// Reserve space for system prompt (~200 tokens) and JSON structure (~100 tokens)
 	const systemOverhead = 300;
-	
+
 	// Safe output budget: 30% of context for output (conservative for structured outputs)
-	const safeOutputBudget = Math.floor((modelContextWindow - systemOverhead) * 0.3);
-	
+	// but never larger than the server's hard ceiling.
+	const safeOutputBudget = Math.min(
+		SERVER_OUTPUT_CEILING,
+		Math.floor((modelContextWindow - systemOverhead) * 0.3)
+	);
+
 	// Estimate tokens per cell
 	const inputPerCell = estimateInputTokensPerCell(compressed, memoryWindow, neighborhoodSize);
 	const outputPerCell = estimateOutputTokensPerCell(wantColor);
-	
+
 	// Calculate max cells that fit in the context window
 	// Formula: inputPerCell * N + outputPerCell * N <= contextWindow - systemOverhead
 	// So: N <= (contextWindow - systemOverhead) / (inputPerCell + outputPerCell)
 	const tokensPerCell = inputPerCell + outputPerCell;
 	const maxCellsRaw = Math.floor((modelContextWindow - systemOverhead) / tokensPerCell);
-	
-	// Also constrain by output budget (structured outputs may have limits)
-	const maxCellsByOutput = Math.floor(safeOutputBudget / outputPerCell);
-	
+
+	// Output-budget cap. The server multiplies per-cell output by a 1.4 safety
+	// factor when computing max_tokens, so do the same here to stay under the
+	// ceiling with margin for the model's trailing whitespace / brackets.
+	const maxCellsByOutput = Math.floor(safeOutputBudget / (outputPerCell * 1.4));
+
 	// Use the smaller of the two, with some safety margin (80%)
 	const maxCellsPerChunk = Math.max(50, Math.floor(Math.min(maxCellsRaw, maxCellsByOutput) * 0.8));
-	
+
 	return {
 		maxCellsPerChunk,
 		estimatedInputTokensPerCell: inputPerCell,
@@ -232,6 +272,11 @@ export class NlcaOrchestrator {
 		totalOutputTokens: 0,
 		callCount: 0
 	};
+	/** Pricing fetched once at construction; used to convert usage into dollars
+	 * on every API response. `null` when the provider doesn't publish per-token
+	 * pricing for this model — cost stays at 0 in that case. */
+	private pricing: ModelPricing | null = null;
+	private pricingLoaded: Promise<void>;
 	private debugLog: DebugLogEntry[] = [];
 	private maxDebugLogSize = 500; // Keep last 500 entries
 	private debugEnabled = true;
@@ -247,6 +292,31 @@ export class NlcaOrchestrator {
 		console.log(
 			`[NLCA] Orchestrator initialized provider=${this.cfg.apiProvider ?? 'openrouter'} model=${this.cfg.model.model}`
 		);
+		this.pricingLoaded = this.loadPricing();
+	}
+
+	private async loadPricing(): Promise<void> {
+		const provider = this.cfg.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
+		const apiKey =
+			provider === 'sambanova' ? this.cfg.sambaNovaApiKey ?? '' : this.cfg.apiKey ?? '';
+		try {
+			this.pricing = await getModelPricing(provider, this.cfg.model.model, apiKey);
+		} catch {
+			this.pricing = null;
+		}
+	}
+
+	/** Current per-token pricing (null when unknown). Used by the
+	 * ExperimentManager to keep its own estimate in sync after the pricing
+	 * fetch completes. */
+	getPricing(): ModelPricing | null {
+		return this.pricing;
+	}
+
+	/** Resolves once the pricing fetch settles. Safe to await zero or many
+	 * times; pricing is loaded at most once per session per (provider, key). */
+	pricingReady(): Promise<void> {
+		return this.pricingLoaded;
 	}
 
 	updateConfig(partial: Partial<NlcaOrchestratorConfig>) {
@@ -277,7 +347,7 @@ export class NlcaOrchestrator {
 		// SambaNova mode: bypass token-window chunking — dedup caps unique contexts
 		// well below any reasonable limit (2^(neighbors+1) entries max).
 		if (this.cfg.apiProvider === 'sambanova') {
-			return this.cfg.chunkSize ?? SAMBANOVA_CHUNK_SIZE;
+			return this.cfg.chunkSize ?? sambanovaChunkSize(this.cfg.model?.model);
 		}
 
 		const estimate = calculateOptimalChunkSize(
@@ -349,6 +419,20 @@ export class NlcaOrchestrator {
 	/** Get accumulated cost statistics */
 	getCostStats(): NlcaCostStats {
 		return { ...this.costStats };
+	}
+
+	/** Record token usage + derived cost from a call that bypassed the
+	 * orchestrator (e.g. the streaming path in stepper.ts which talks directly
+	 * to /api/nlca/decideFrameStream). Keeps a single source of truth for
+	 * totalCost regardless of the wire path. */
+	recordExternalUsage(promptTokens: number, completionTokens: number): void {
+		if (!Number.isFinite(promptTokens) && !Number.isFinite(completionTokens)) return;
+		const p = Number.isFinite(promptTokens) ? promptTokens : 0;
+		const c = Number.isFinite(completionTokens) ? completionTokens : 0;
+		this.costStats.totalInputTokens += p;
+		this.costStats.totalOutputTokens += c;
+		this.costStats.totalCost += computeCallCost(p, c, this.pricing);
+		this.costStats.callCount++;
 	}
 
 	/** Get debug log entries */
@@ -444,7 +528,7 @@ export class NlcaOrchestrator {
 	 * Execute a batch of cells via the server proxy.
 	 * The proxy fans out to OpenRouter with concurrency + retries.
 	 */
-	async decideCellsBatch(items: Array<{ agent: CellAgent; req: NlcaCellRequest }>, promptConfig?: PromptConfig): Promise<Map<number, CellDecisionResult>> {
+	async decideCellsBatch(items: Array<{ agent: CellAgent; req: NlcaCellRequest }>, promptConfig?: PromptConfig, runId?: string): Promise<Map<number, CellDecisionResult>> {
 		const byCellId = new Map<number, CellDecisionResult>();
 
 		const cells = items.map(({ agent, req }) => {
@@ -477,6 +561,7 @@ export class NlcaOrchestrator {
 					maxOutputTokens: this.cfg.model.maxOutputTokens,
 					timeoutMs: this.cfg.cellTimeoutMs,
 					maxConcurrency: this.effectiveConcurrency,
+					runId,
 					cells
 				})
 			});
@@ -529,6 +614,7 @@ export class NlcaOrchestrator {
 					outputTokens = usage.completion_tokens;
 					this.costStats.totalInputTokens += inputTokens ?? 0;
 					this.costStats.totalOutputTokens += outputTokens ?? 0;
+					this.costStats.totalCost += computeCallCost(inputTokens, outputTokens, this.pricing);
 					this.costStats.callCount++;
 				}
 
@@ -594,6 +680,7 @@ export class NlcaOrchestrator {
 				neighbors: Array<[number, number, CellState01]>;
 				history?: CellState01[];
 			}>;
+			runId?: string;
 		},
 		promptConfig: PromptConfig
 	): Promise<{ results: Map<number, CellDecisionResult>; frameLatencyMs: number; usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null }> {
@@ -658,11 +745,11 @@ export class NlcaOrchestrator {
 					model: this.cfg.model.model,
 					temperature: this.cfg.model.temperature,
 					timeoutMs: this.cfg.cellTimeoutMs,
-					// Frame calls need a much larger output cap than per-cell calls (900 decisions).
 					maxOutputTokens: Math.max(8192, this.cfg.model.maxOutputTokens),
 					width: args.width,
 					height: args.height,
 					generation: args.generation,
+					runId: args.runId,
 					cells: cellsToProcess.map((c) => ({
 						cellId: c.cellId,
 						x: c.x,
@@ -769,6 +856,12 @@ export class NlcaOrchestrator {
 		if (usage) {
 			this.costStats.totalInputTokens += usage.prompt_tokens ?? 0;
 			this.costStats.totalOutputTokens += usage.completion_tokens ?? 0;
+			this.costStats.totalCost += computeCallCost(
+				usage.prompt_tokens ?? 0,
+				usage.completion_tokens ?? 0,
+				this.pricing
+			);
+			this.costStats.callCount++;
 		}
 
 		const cachedCount = args.cells.length - cellsToProcess.length;

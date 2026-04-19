@@ -195,6 +195,37 @@ export class NlcaStepper {
 		try {
 			const payloadCells = makePayloadCells(cells);
 
+			// Pre-flight: streaming sends all cells in one API call with a single
+			// max_tokens budget. The server clamps max_tokens at 12288, which fits
+			// ~480 coloured decisions. Larger frames truncate mid-stream and surface
+			// as "Incomplete streamed frame: N/M decisions" — route those through
+			// chunked parallel dispatch so each chunk stays inside the output budget.
+			const STREAM_MAX_CELLS_WITH_COLOR = 450;
+			const STREAM_MAX_CELLS_NO_COLOR = 900;
+			const streamCap = wantColor ? STREAM_MAX_CELLS_WITH_COLOR : STREAM_MAX_CELLS_NO_COLOR;
+			if (this.cfg.orchestrator.frameStreamed && totalCells > streamCap) {
+				console.warn(
+					`[NLCA] Skipping stream for ${totalCells}-cell frame (> ${streamCap}); using chunked dispatch so every chunk fits the server output ceiling.`
+				);
+				this.frameBatchedFallbacks++;
+				await this.decideFrameParallelChunks(
+					cells,
+					width,
+					height,
+					generation,
+					latency8,
+					workingGrid,
+					decisions,
+					colorsHex,
+					colorStatus8,
+					wantColor,
+					makePayloadCells,
+					callbacks,
+					promptConfig
+				);
+				return { decisionMap: decisions, colorsHex, colorStatus8 };
+			}
+
 			if (this.cfg.orchestrator.frameStreamed) {
 				const t0 = performance.now();
 				const decoder = new TextDecoder();
@@ -216,6 +247,7 @@ export class NlcaStepper {
 						width,
 						height,
 						generation,
+						runId: this.cfg.runId,
 						cells: payloadCells.map((c) => ({
 							cellId: c.cellId,
 							x: c.x,
@@ -330,6 +362,12 @@ export class NlcaStepper {
 								throw new Error(`Stream total mismatch: total=${doneTotal} expected=${totalCells}`);
 							}
 							callbacks?.onBatchProgress?.(totalCells, totalCells, workingGrid);
+							const usage = payload?.usage;
+							if (usage && typeof usage === 'object') {
+								const p = Number((usage as { prompt_tokens?: unknown }).prompt_tokens ?? 0);
+								const c = Number((usage as { completion_tokens?: unknown }).completion_tokens ?? 0);
+								this.orchestrator.recordExternalUsage(p, c);
+							}
 						} else if (eventName === 'error') {
 							throw new Error(String(payload.message ?? 'stream error'));
 						}
@@ -337,7 +375,7 @@ export class NlcaStepper {
 				}
 			} else {
 				const { results, frameLatencyMs } = await this.orchestrator.decideFrame(
-					{ width, height, generation, cells: payloadCells },
+					{ width, height, generation, cells: payloadCells, runId: this.cfg.runId },
 					promptConfig ?? { taskDescription: '', useAdvancedMode: false }
 				);
 
@@ -471,7 +509,7 @@ export class NlcaStepper {
 		const processChunk = async (chunk: CellContext[]): Promise<void> => {
 			const payloadCells = makePayloadCells(chunk);
 			const { results, frameLatencyMs } = await this.orchestrator.decideFrame(
-				{ width, height, generation, cells: payloadCells },
+				{ width, height, generation, cells: payloadCells, runId: this.cfg.runId },
 				promptConfig ?? { taskDescription: '', useAdvancedMode: false }
 			);
 
@@ -587,7 +625,7 @@ export class NlcaStepper {
 				return { agent, req };
 			});
 
-			const resultMap = await this.orchestrator.decideCellsBatch(items, promptConfig);
+			const resultMap = await this.orchestrator.decideCellsBatch(items, promptConfig, this.cfg.runId);
 
 			for (const cell of chunk) {
 				const result = resultMap.get(cell.id);

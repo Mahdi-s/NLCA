@@ -26,12 +26,17 @@ export interface PromptConfig {
 }
 
 // Default task description (forms a filled square in the center)
-const DEFAULT_TASK = `Form a filled square in the center of the grid.
+const DEFAULT_TASK = `Together with your neighbors, form a solid filled square in the middle of the grid.
 
-Rules:
-1. If your x coordinate is between 3 and 7 (inclusive) AND your y coordinate is between 3 and 7 (inclusive) → output 1
-2. Otherwise → output 0
-3. Your previous state does not matter - only your position determines your state`;
+Shared goal:
+- A single coherent square block centered on the grid, roughly 40% of the grid's width/height on each side.
+
+Your decision:
+- Let centerX = gridWidth / 2 and centerY = gridHeight / 2.
+- Let halfSide = max(2, floor(min(gridWidth, gridHeight) * 0.20)).
+- If |x - centerX| <= halfSide AND |y - centerY| <= halfSide → join the square (state=1).
+- Otherwise → stay outside (state=0).
+- If you are right at the edge and unsure, use your neighborhood: if most of your neighbors on the "inside" side are alive, close the edge; if most are dead, stay out.`;
 
 function buildOutputContract(cfg?: PromptConfig): string {
 	const wantColor = cfg?.cellColorHexEnabled === true;
@@ -53,32 +58,27 @@ export function buildOutputContractText(cfg?: PromptConfig): string {
 }
 
 // Default template - provides full context about cellular automata
-const DEFAULT_TEMPLATE = `You are an autonomous cell agent in a cellular automaton simulation.
+const DEFAULT_TEMPLATE = `== YOUR POSITION ==
+You occupy cell ({{CELL_X}}, {{CELL_Y}}) on a {{GRID_WIDTH}}×{{GRID_HEIGHT}} grid.
+x increases rightward (0 to {{MAX_X}}), y increases downward (0 to {{MAX_Y}}).
 
-== YOUR IDENTITY ==
-Position: ({{CELL_X}}, {{CELL_Y}}) on a {{GRID_WIDTH}}×{{GRID_HEIGHT}} grid
-Coordinate system: x increases rightward (0 to {{MAX_X}}), y increases downward (0 to {{MAX_Y}})
+== HOW THIS GRID WORKS ==
+{{GRID_WIDTH}}×{{GRID_HEIGHT}} cells update at the same time each generation. Every cell
+reads the current frame (its own state + neighbor states), then all cells
+commit their next state simultaneously. You cooperate with your neighbors
+to accomplish the shared task below — your choice depends on the
+collective pattern the group is trying to form, not only on your position
+alone.
 
-== CELLULAR AUTOMATA CONTEXT ==
-You are one of {{GRID_WIDTH}}×{{GRID_HEIGHT}} cells operating in parallel.
-Each generation, every cell simultaneously decides its next state based on:
-- Its position on the grid
-- Its current state (0=dead/off, 1=alive/on)
-- The states of neighboring cells
-
-This is a synchronous update: all cells read the current state, then all cells update at once.
-
-== YOUR TASK ==
+== TASK ==
 {{TASK}}
 
-== INPUT FORMAT (provided each generation) ==
-You will receive a JSON object with:
-- "generation": Current time step (0, 1, 2, ...)
-- "state": Your current state (0 or 1)
-- "neighbors": Count of alive neighbors (0-8 for Moore neighborhood)
-- "neighborhood": Array of [dx, dy, state] for each neighbor
-  - dx, dy: relative offset from your position (e.g., [-1, -1] is top-left)
-  - state: that neighbor's current state (0 or 1)
+== INPUT (each generation) ==
+A JSON object with:
+- "generation": Current time step (0, 1, 2, ...).
+- "state": Your current state (0 or 1).
+- "neighbors": Count of alive neighbors.
+- "neighborhood": Array of [dx, dy, state] — offsets relative to you.
 
 == OUTPUT FORMAT ==
 {{OUTPUT_CONTRACT}}`;

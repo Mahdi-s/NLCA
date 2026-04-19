@@ -846,12 +846,14 @@
 		const h = simState.gridHeight;
 		const aspect = canvasWidth / canvasHeight;
 		
-		// Minimum zoom: show the whole grid with 50% padding around it
-		// This allows seeing the grid boundaries clearly with space around it
+		// Minimum zoom: how many cell-widths fit across the viewport at maximum
+		// zoom-out. Larger = more empty space around the grid. 4x padding gives
+		// the user room to pull back and see the whole piece with a generous
+		// margin for the HUD / panels without the grid feeling cramped.
 		const gridVisualWidth = w;
 		const gridVisualHeight = h;
-		const minZoomForWidth = gridVisualWidth * 2.5; // 2.5x padding for width
-		const minZoomForHeight = gridVisualHeight * aspect * 2.5; // 2.5x padding for height
+		const minZoomForWidth = gridVisualWidth * 4.0;
+		const minZoomForHeight = gridVisualHeight * aspect * 4.0;
 		const minZoom = Math.max(minZoomForWidth, minZoomForHeight);
 		
 		// Maximum zoom: don't zoom in more than 1 cell per 20 pixels
@@ -1929,6 +1931,231 @@
 			nlcaCellColorsPacked = null;
 			simulation.clearCellColors();
 		}
+	}
+
+	/**
+	 * Reset the canvas to an empty grid of the given dimensions. Used when
+	 * switching to an experiment whose frame data is unavailable on disk, to
+	 * prevent the previously-active experiment's cells from ghosting through.
+	 */
+	export function clearExperimentGrid(width: number, height: number) {
+		if (!simulation || !ctx) return;
+		if (simState.gridWidth !== width || simState.gridHeight !== height) {
+			resize(width, height);
+		}
+		const empty = new Uint32Array(width * height);
+		simulation.setCellData(empty);
+		nlcaCellColorsPacked = null;
+		simulation.clearCellColors();
+	}
+
+	// --- Playback animation -----------------------------------------------------
+	// Transition from one saved frame to the next with a per-cell random stagger
+	// + brightness fade, so the user sees the grid "come to life" rather than
+	// snap between states. Used by the ExperimentManager playback loop.
+	let playbackAnimCancel: (() => void) | null = null;
+
+	/** Cancel any in-flight playback animation. Safe to call repeatedly. */
+	export function cancelPlaybackAnimation(): void {
+		if (playbackAnimCancel) {
+			const fn = playbackAnimCancel;
+			playbackAnimCancel = null;
+			fn();
+		}
+	}
+
+	function hexToRgb(hex: string | null | undefined): { r: number; g: number; b: number } | null {
+		if (!hex || typeof hex !== 'string') return null;
+		const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+		if (!m) return null;
+		const n = parseInt(m[1]!, 16);
+		return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+	}
+
+	function packRgb(r: number, g: number, b: number): number {
+		// status=valid (1 in bits 24..25) so the shader applies the RGB
+		return (((1 & 0x3) << 24) | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff)) >>> 0;
+	}
+
+	/**
+	 * Animate a transition from the current on-canvas state to the next saved
+	 * frame. Only cells whose state or colour differ between the two frames get
+	 * animated — each changed cell fires after a random delay inside the stagger
+	 * window, then fades over ~35% of the total duration.
+	 *
+	 * Resolves when the animation reaches the target frame, or when
+	 * cancelPlaybackAnimation() is called (whichever comes first).
+	 */
+	export function animateTransition(
+		currentGrid: Uint32Array | null,
+		nextGrid: Uint32Array,
+		currentColorsHex: Array<string | null> | null,
+		nextColorsHex: Array<string | null> | null,
+		width: number,
+		height: number,
+		totalMs: number
+	): Promise<void> {
+		cancelPlaybackAnimation();
+		if (!simulation || !ctx) return Promise.resolve();
+		const sim = simulation;
+		if (simState.gridWidth !== width || simState.gridHeight !== height) resize(width, height);
+
+		const total = width * height;
+		const cur = currentGrid && currentGrid.length === total ? currentGrid : new Uint32Array(total);
+		if (nextGrid.length !== total) {
+			sim.setCellData(nextGrid);
+			return Promise.resolve();
+		}
+
+		const wantColors = nlcaUseCellColors && (nextColorsHex != null || currentColorsHex != null);
+
+		// Diff pass. A cell animates if its state flipped or (in colour mode) its
+		// colour string differs. We store the indices so we can iterate hot cells
+		// instead of scanning the full grid each RAF tick.
+		const changed: number[] = [];
+		for (let i = 0; i < total; i++) {
+			const curAlive = (cur[i] ?? 0) !== 0;
+			const nextAlive = (nextGrid[i] ?? 0) !== 0;
+			const colorDiff =
+				wantColors && (currentColorsHex?.[i] ?? null) !== (nextColorsHex?.[i] ?? null);
+			if (curAlive !== nextAlive || colorDiff) changed.push(i);
+		}
+
+		const finalColorPacked = (() => {
+			if (!wantColors) return null;
+			const buf = new Uint32Array(total);
+			if (nextColorsHex) {
+				for (let i = 0; i < total; i++) {
+					if ((nextGrid[i] ?? 0) !== 0) {
+						const rgb = hexToRgb(nextColorsHex[i]);
+						if (rgb) buf[i] = packRgb(rgb.r, rgb.g, rgb.b);
+					}
+				}
+			}
+			return buf;
+		})();
+
+		if (changed.length === 0) {
+			sim.setCellData(nextGrid);
+			if (wantColors && finalColorPacked) sim.setCellColorsPacked(finalColorPacked);
+			else if (!wantColors) sim.clearCellColors();
+			return Promise.resolve();
+		}
+
+		const perCellFadeMs = Math.max(60, Math.min(220, totalMs * 0.35));
+		const staggerWindow = Math.max(60, totalMs - perCellFadeMs);
+		const activations = new Float32Array(changed.length);
+		// Distribute activation times evenly across the stagger window with per-
+		// bucket jitter, then shuffle cell → bucket so the reveal order stays
+		// random. Using pure random per-cell sampling makes small diffs finish
+		// much faster than totalMs because the sampled values cluster in a
+		// fraction of the window — the user sees the animation accelerate for
+		// frames where few cells change, which looks like a bug.
+		const N = changed.length;
+		for (let i = 0; i < N; i++) activations[i] = ((i + Math.random()) / N) * staggerWindow;
+		for (let i = N - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			const tmp = activations[i]!;
+			activations[i] = activations[j]!;
+			activations[j] = tmp;
+		}
+
+		// Pre-compute current and next packed RGB for each changed cell so the
+		// per-frame lerp is just arithmetic on Uint8 channels.
+		const curRgb = new Int16Array(changed.length * 3); // signed so -1 = missing
+		const nextRgb = new Int16Array(changed.length * 3);
+		for (let i = 0; i < changed.length; i++) {
+			const idx = changed[i]!;
+			const c = wantColors ? hexToRgb(currentColorsHex?.[idx] ?? null) : null;
+			const n = wantColors ? hexToRgb(nextColorsHex?.[idx] ?? null) : null;
+			if (c) {
+				curRgb[i * 3] = c.r; curRgb[i * 3 + 1] = c.g; curRgb[i * 3 + 2] = c.b;
+			} else { curRgb[i * 3] = -1; }
+			if (n) {
+				nextRgb[i * 3] = n.r; nextRgb[i * 3 + 1] = n.g; nextRgb[i * 3 + 2] = n.b;
+			} else { nextRgb[i * 3] = -1; }
+		}
+
+		// Working buffers that we push to the simulation on each RAF tick.
+		const displayGrid = new Uint32Array(cur);
+		const displayColors = wantColors ? new Uint32Array(total) : null;
+		if (wantColors && displayColors && currentColorsHex) {
+			for (let i = 0; i < total; i++) {
+				if ((cur[i] ?? 0) !== 0) {
+					const rgb = hexToRgb(currentColorsHex[i]);
+					if (rgb) displayColors[i] = packRgb(rgb.r, rgb.g, rgb.b);
+				}
+			}
+		}
+
+		const startTime = performance.now();
+
+		return new Promise<void>((resolve) => {
+			let rafId = 0;
+			let cancelled = false;
+
+			const tick = () => {
+				if (cancelled) { resolve(); return; }
+				const now = performance.now();
+				const elapsed = now - startTime;
+				let allDone = true;
+
+				for (let i = 0; i < changed.length; i++) {
+					const idx = changed[i]!;
+					const t = activations[i]!;
+					if (elapsed < t) {
+						allDone = false;
+						continue; // not yet activated — keep current value
+					}
+					const progress = Math.min(1, (elapsed - t) / perCellFadeMs);
+					if (progress < 1) allDone = false;
+
+					const curAlive = (cur[idx] ?? 0) !== 0;
+					const nextAlive = (nextGrid[idx] ?? 0) !== 0;
+					const halfPast = progress >= 0.5;
+					const showAlive = halfPast ? nextAlive : curAlive;
+					displayGrid[idx] = showAlive ? 1 : 0;
+
+					if (wantColors && displayColors) {
+						// Fade brightness toward/away from center of the fade window. In the
+						// first half we darken the old colour; in the second half we brighten
+						// the new colour in. intensity = |p - 0.5| * 2, so 1→0→1.
+						const intensity = Math.abs(progress - 0.5) * 2;
+						const srcBase = halfPast ? i * 3 : i * 3;
+						const rgb = halfPast ? nextRgb : curRgb;
+						if (!showAlive || rgb[srcBase] < 0) {
+							displayColors[idx] = 0;
+						} else {
+							const r = Math.round((rgb[srcBase]! as number) * intensity);
+							const g = Math.round((rgb[srcBase + 1]! as number) * intensity);
+							const b = Math.round((rgb[srcBase + 2]! as number) * intensity);
+							displayColors[idx] = packRgb(r, g, b);
+						}
+					}
+				}
+
+				sim.setCellData(displayGrid);
+				if (wantColors && displayColors) sim.setCellColorsPacked(displayColors);
+
+				if (allDone) {
+					// Final snap to guarantee consistency with the saved frame.
+					sim.setCellData(nextGrid);
+					if (wantColors && finalColorPacked) sim.setCellColorsPacked(finalColorPacked);
+					else if (!wantColors) sim.clearCellColors();
+					playbackAnimCancel = null;
+					resolve();
+				} else {
+					rafId = requestAnimationFrame(tick);
+				}
+			};
+
+			playbackAnimCancel = () => {
+				cancelled = true;
+				if (rafId) cancelAnimationFrame(rafId);
+				resolve();
+			};
+			rafId = requestAnimationFrame(tick);
+		});
 	}
 
 	function isMobileShareEnvironment() {

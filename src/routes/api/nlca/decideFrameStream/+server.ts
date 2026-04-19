@@ -1,4 +1,6 @@
 import { error, type RequestHandler } from '@sveltejs/kit';
+import { writeNlcaLog, buildCellBreakdown } from '$lib/server/nlcaLogger.js';
+import { dev } from '$app/environment';
 
 type CellState01 = 0 | 1;
 
@@ -31,6 +33,8 @@ type DecideFrameRequest = {
 	width: number;
 	height: number;
 	generation: number;
+	/** Optional experiment/run ID — used for log file organisation only. */
+	runId?: string;
 	cells: DecideFrameCell[];
 	promptConfig: PromptConfigPayload;
 };
@@ -458,6 +462,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const width = Number(payload?.width ?? NaN);
 	const height = Number(payload?.height ?? NaN);
 	const generation = Number(payload?.generation ?? NaN);
+	const runId = typeof payload?.runId === 'string' && payload.runId.trim() ? payload.runId.trim() : `anon-${Date.now()}`;
 	const cells = Array.isArray(payload?.cells) ? payload!.cells : [];
 	const promptConfig = payload?.promptConfig as PromptConfigPayload | undefined;
 
@@ -549,6 +554,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const total = cells.length;
 	const startedAt = performance.now();
 	inflightFrames++;
+	// Accumulate decisions for end-of-stream disk logging.
+	const streamLogDecisions: Array<{ cellId: number; state: 0 | 1; color?: string }> = [];
+	const streamMessages = messages; // captured for log
 	console.log(
 		`[NLCA STREAM] start frame=${frameId} inflight=${inflightFrames} gen=${generation} ` +
 			`grid=${width}x${height} cells=${total} model=${model} max_tokens=${maxOutputTokens} wantColor=${wantColor}`
@@ -724,8 +732,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 							}
 
-							completed++;
-							controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						completed++;
+						if (dev) streamLogDecisions.push({ cellId, state: stateNum as 0 | 1, color });
+						controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
 
 							if (completed % logEvery === 0 || completed === total) {
 								controller.enqueue(encoder.encode(encodeSse('progress', { completed, total })));
@@ -817,8 +826,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 										if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 									}
 
-									completed++;
-									controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						completed++;
+						if (dev) streamLogDecisions.push({ cellId, state: stateNum as 0 | 1, color });
+						controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
 
 									if (completed % logEvery === 0 || completed === total) {
 										controller.enqueue(encoder.encode(encodeSse('progress', { completed, total })));
@@ -884,8 +894,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								const cc = rawColor.trim().toUpperCase();
 								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 							}
-							completed++;
-							controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						completed++;
+						if (dev) streamLogDecisions.push({ cellId, state: stateNum as 0 | 1, color });
+						controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
 						}
 						console.log(
 							`[NLCA STREAM] fallback-done frame=${frameId} completed=${completed}/${total} ` +
@@ -947,9 +958,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 								const cc = rawColor.trim().toUpperCase();
 								if (/^#[0-9A-F]{6}$/.test(cc)) color = cc;
 							}
-							completed++;
-							added++;
-							controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
+						completed++;
+						added++;
+						if (dev) streamLogDecisions.push({ cellId, state: stateNum as 0 | 1, color });
+						controller.enqueue(encoder.encode(encodeSse('decision', { cellId, state: stateNum, color })));
 						}
 						console.log(
 							`[NLCA STREAM] max-tokens retry done frame=${frameId} added=${added} ` +
@@ -990,6 +1002,46 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			} finally {
 				inflightFrames = Math.max(0, inflightFrames - 1);
 				console.log(`[NLCA STREAM] end frame=${frameId} inflight=${inflightFrames}`);
+
+				// Disk log — written once the stream closes, capturing all accumulated decisions.
+				if (dev) {
+					try {
+						const nowMs = Date.now();
+						const latencyMs = performance.now() - startedAt;
+						writeNlcaLog({
+							runId,
+							generation,
+							timestamp: new Date(nowMs).toISOString(),
+							timestampMs: nowMs,
+							model,
+							provider,
+							mode: 'frame-batched-stream',
+							grid: { width, height },
+							systemPrompt: streamMessages[0]!.content as string,
+							userPayloadSent: JSON.parse(streamMessages[1]!.content as string) as unknown,
+							cellBreakdown: buildCellBreakdown(
+								cells.map((c) => ({
+									cellId: c.cellId,
+									x: c.x,
+									y: c.y,
+									self: c.self,
+									neighborhood: c.neighborhood as Array<[number, number, 0 | 1]>,
+									history: c.history as Array<0 | 1> | undefined
+								})),
+								streamLogDecisions
+							),
+							response: {
+								rawContent: '',
+								decisions: streamLogDecisions,
+								usage: null
+							},
+							latencyMs
+						});
+					} catch (logErr) {
+						console.warn('[NLCA LOG] stream logging error:', logErr instanceof Error ? logErr.message : String(logErr));
+					}
+				}
+
 				controller.close();
 			}
 		}

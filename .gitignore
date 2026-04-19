@@ -23,7 +23,12 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Local dev experiment databases
-/experiments/
+/experiments/*
+!/experiments/.gitkeep
+
+# Local dev prompt logs
+/logs/*
+!/logs/.gitkeep
 
 # Local git worktrees (used for branch comparisons)
 .worktrees/

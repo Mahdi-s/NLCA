@@ -1,4 +1,6 @@
 import { json, error, isHttpError, type RequestHandler } from '@sveltejs/kit';
+import { writeNlcaLog, buildCellBreakdown } from '$lib/server/nlcaLogger.js';
+import { dev } from '$app/environment';
 
 type CellState01 = 0 | 1;
 
@@ -33,6 +35,8 @@ type DecideFrameRequest = {
 	width: number;
 	height: number;
 	generation: number;
+	/** Optional experiment/run ID — used for log file organisation only. */
+	runId?: string;
 	cells: DecideFrameCell[];
 	promptConfig: PromptConfigPayload;
 };
@@ -50,7 +54,7 @@ const SAMBANOVA_ZERO_THINKING_SYSTEM =
 
 type OpenRouterChatResponse = {
 	id?: string;
-	choices?: Array<{ message?: { content?: unknown } }>;
+	choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>;
 	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 };
 
@@ -358,6 +362,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const width = Number(payload?.width ?? NaN);
 	const height = Number(payload?.height ?? NaN);
 	const generation = Number(payload?.generation ?? NaN);
+	const runId = typeof payload?.runId === 'string' && payload.runId.trim() ? payload.runId.trim() : `anon-${Date.now()}`;
 	const cells = Array.isArray(payload?.cells) ? payload!.cells : [];
 	const promptConfig = payload?.promptConfig as PromptConfigPayload | undefined;
 
@@ -495,7 +500,48 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 					? (parsed as { d?: unknown }).d ?? (parsed as { decisions?: unknown }).decisions
 					: (parsed as { decisions?: unknown }).decisions;
 			if (!Array.isArray(decisionsRaw) || decisionsRaw.length !== cells.length) {
-				throw error(502, 'Model returned invalid decisions array');
+				const rawText = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+				const got = Array.isArray(decisionsRaw) ? decisionsRaw.length : 'not-an-array';
+				const finish = data?.choices?.[0]?.finish_reason ?? 'unknown';
+				// Fire-and-forget failure log so the user can inspect what the model
+				// actually returned — the normal success-path logger is skipped on errors.
+				if (dev) {
+					try {
+						const nowMs = Date.now();
+						writeNlcaLog({
+							runId,
+							generation,
+							timestamp: new Date(nowMs).toISOString(),
+							timestampMs: nowMs,
+							model,
+							provider,
+							mode: 'frame-batched',
+							grid: { width, height },
+							systemPrompt: messages[0]!.content as string,
+							userPayloadSent: JSON.parse(messages[1]!.content as string) as unknown,
+							cellBreakdown: [],
+							response: {
+								rawContent: rawText,
+								decisions: [],
+								usage: data?.usage
+									? {
+											promptTokens: data.usage.prompt_tokens ?? 0,
+											completionTokens: data.usage.completion_tokens ?? 0
+										}
+									: null
+							},
+							latencyMs,
+							error: `invalid decisions array: expected=${cells.length} got=${got} finish=${finish}`
+						});
+					} catch {
+						// swallow — logger must not throw
+					}
+				}
+				throw error(
+					502,
+					`Model returned invalid decisions array (expected=${cells.length} got=${got} finish=${finish}). ` +
+						`First 200 chars of response: ${rawText.slice(0, 200)}`
+				);
 			}
 
 			// Normalise minified rows back to the canonical shape {cellId,state,color?}
@@ -527,6 +573,47 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 				seen.add(cellId);
 			}
 			if (seen.size !== expectedIds.size) throw error(502, 'Model returned incomplete decisions');
+
+			// Fire-and-forget disk log (dev only to avoid cluttering production).
+			if (dev) {
+				const nowMs = Date.now();
+				const systemPrompt = messages[0]!.content as string;
+				const userPayloadSent = JSON.parse(messages[1]!.content as string) as unknown;
+				writeNlcaLog({
+					runId,
+					generation,
+					timestamp: new Date(nowMs).toISOString(),
+					timestampMs: nowMs,
+					model,
+					provider,
+					mode: 'frame-batched',
+					grid: { width, height },
+					systemPrompt,
+					userPayloadSent,
+					cellBreakdown: buildCellBreakdown(
+						cells.map((c) => ({
+							cellId: c.cellId,
+							x: c.x,
+							y: c.y,
+							self: c.self,
+							neighborhood: c.neighborhood as Array<[number, number, 0 | 1]>,
+							history: c.history as Array<0 | 1> | undefined
+						})),
+						decisions as Array<{ cellId: number; state: 0 | 1; color?: string }>
+					),
+					response: {
+						rawContent: typeof content === 'string' ? content : JSON.stringify(content),
+						decisions: decisions as Array<{ cellId: number; state: 0 | 1; color?: string }>,
+						usage: data?.usage
+							? {
+									promptTokens: data.usage.prompt_tokens ?? 0,
+									completionTokens: data.usage.completion_tokens ?? 0
+								}
+							: null
+					},
+					latencyMs
+				});
+			}
 
 			return json({
 				id: data?.id ?? null,

@@ -26,9 +26,13 @@
 		experimentActive?: boolean;
 		experimentStatus?: 'running' | 'paused' | 'completed' | 'error';
 		activeExperiment?: Experiment | null;
+		/** True when a playback animation is actively advancing frames (not paused). */
+		playbackActive?: boolean;
 		onexperimentpause?: () => void;
 		onexperimentresume?: () => void;
 		onseek?: (generation: number) => void;
+		onseekprev?: () => void;
+		onseeknext?: () => void;
 		onexperiments?: () => void;
 		showExperimentPanel?: boolean;
 	}
@@ -53,9 +57,12 @@
 		experimentActive = false,
 		experimentStatus,
 		activeExperiment = null,
+		playbackActive = false,
 		onexperimentpause,
 		onexperimentresume,
 		onseek,
+		onseekprev,
+		onseeknext,
 		onexperiments,
 		showExperimentPanel = false
 	}: Props = $props();
@@ -174,8 +181,17 @@
 	<div class="button-row">
 	<div class="button-group" id="tour-playback-group">
 		{#if experimentActive}
-			<button class="control-btn primary" onclick={() => experimentStatus === 'running' ? onexperimentpause?.() : onexperimentresume?.()} data-tooltip={experimentStatus === 'running' ? 'Pause (Enter)' : 'Play / New Experiment (Enter)'}>
-				{#if experimentStatus === 'running'}
+			{@const showPause = experimentStatus === 'running' || playbackActive}
+			<button
+				class="control-btn primary"
+				onclick={() => (showPause ? onexperimentpause?.() : onexperimentresume?.())}
+				data-tooltip={showPause
+					? 'Pause (Enter)'
+					: activeExperiment && activeExperiment.progress.current > 0
+						? 'Play — Replay Frames (Enter)'
+						: 'Play / New Experiment (Enter)'}
+			>
+				{#if showPause}
 					<svg viewBox="0 0 24 24" fill="currentColor">
 						<rect x="6" y="4" width="4" height="16" rx="1" />
 						<rect x="14" y="4" width="4" height="16" rx="1" />
@@ -185,6 +201,30 @@
 						<path d="M8 5.14v14l11-7-11-7z" />
 					</svg>
 				{/if}
+			</button>
+
+			<button
+				class="control-btn"
+				onclick={onseekprev}
+				disabled={experimentStatus === 'running' || !activeExperiment || activeExperiment.currentGeneration <= 1}
+				data-tooltip="Previous Frame"
+				aria-label="Previous Frame"
+			>
+				<svg viewBox="0 0 24 24" fill="currentColor">
+					<path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" />
+				</svg>
+			</button>
+
+			<button
+				class="control-btn"
+				onclick={onseeknext}
+				disabled={experimentStatus === 'running' || !activeExperiment || activeExperiment.currentGeneration >= activeExperiment.progress.current}
+				data-tooltip="Next Frame"
+				aria-label="Next Frame"
+			>
+				<svg viewBox="0 0 24 24" fill="currentColor">
+					<path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2V6z" />
+				</svg>
 			</button>
 		{:else}
 			<button class="control-btn primary" onclick={() => simState.togglePlay()} data-tooltip={simState.isPlaying ? 'Pause (Enter)' : 'Play (Enter)'}>
@@ -199,13 +239,13 @@
 					</svg>
 				{/if}
 			</button>
-		{/if}
 
-		<button class="control-btn" onclick={onstep} data-tooltip="Step (S)" disabled={simState.isPlaying} aria-label="Step">
-			<svg viewBox="0 0 24 24" fill="currentColor">
-				<path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2V6z" />
-			</svg>
-		</button>
+			<button class="control-btn" onclick={onstep} data-tooltip="Step (S)" disabled={simState.isPlaying} aria-label="Step">
+				<svg viewBox="0 0 24 24" fill="currentColor">
+					<path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2V6z" />
+				</svg>
+			</button>
+		{/if}
 
 		<div class="control-group">
 			<button class="control-btn" onclick={toggleSpeed} data-tooltip="Speed" class:active={showSpeedSlider} aria-label="Speed">

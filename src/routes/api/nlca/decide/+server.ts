@@ -1,4 +1,6 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
+import { writeNlcaLog } from '$lib/server/nlcaLogger.js';
+import { dev } from '$app/environment';
 
 type Role = 'system' | 'user' | 'assistant';
 type Msg = { role: Role; content: string };
@@ -19,6 +21,8 @@ type DecideRequest = {
 	timeoutMs?: number;
 	/** Max concurrent upstream calls (within this request). */
 	maxConcurrency?: number;
+	/** Optional experiment/run ID — used for log file organisation only. */
+	runId?: string;
 	/** Cells to decide in this batch. */
 	cells: DecideCell[];
 };
@@ -108,6 +112,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const rawModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
 	const model = rawModel || (provider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : '');
 	const cells = Array.isArray(payload?.cells) ? payload!.cells : [];
+	const runId = typeof payload?.runId === 'string' && payload.runId.trim() ? payload.runId.trim() : `anon-${Date.now()}`;
 
 	if (!apiKey) throw error(400, 'Missing apiKey');
 	if (!model) throw error(400, 'Missing model');
@@ -205,6 +210,139 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		} else {
 			errorCount++;
 			if ((r as { status?: unknown }).status === 429) rateLimitedCount++;
+		}
+	}
+
+	// Fire-and-forget disk log (dev only).
+	if (dev) {
+		try {
+			// In per-cell mode there is no shared frame context — extract what we can
+			// from each cell's message history (system = cell context, user = observation).
+			// We infer generation from the first user message's JSON payload.
+			let generation = 0;
+			let width = 0;
+			let height = 0;
+			const perCellBreakdown: Array<{
+				cellId: number;
+				systemPrompt: string;
+				userMessage: string;
+				response: string;
+				ok: boolean;
+			}> = [];
+
+			for (let i = 0; i < cells.length; i++) {
+				const cell = cells[i]!;
+				const msgList = Array.isArray(cell.messages) ? cell.messages : [];
+				const systemPrompt = msgList.find((m) => m.role === 'system')?.content ?? '';
+				const userMsg = msgList.filter((m) => m.role === 'user').pop()?.content ?? '';
+				const result = results[i] as { ok?: unknown; content?: unknown; cellId?: unknown };
+				const response = result?.ok === true && typeof result.content === 'string' ? result.content : '';
+
+				// Best-effort: parse generation/grid from the last user message JSON
+				if (i === 0 && userMsg) {
+					try {
+						const parsed = JSON.parse(userMsg) as {
+							generation?: unknown;
+						};
+						generation = typeof parsed.generation === 'number' ? parsed.generation : 0;
+					} catch {
+						// ignore
+					}
+				}
+
+				perCellBreakdown.push({
+					cellId: cell.cellId,
+					systemPrompt,
+					userMessage: userMsg,
+					response,
+					ok: result?.ok === true
+				});
+			}
+
+			const nowMs = Date.now();
+			writeNlcaLog({
+				runId,
+				generation,
+				timestamp: new Date(nowMs).toISOString(),
+				timestampMs: nowMs,
+				model,
+				provider,
+				mode: 'per-cell',
+				grid: { width, height },
+				systemPrompt: perCellBreakdown[0]?.systemPrompt ?? '',
+				userPayloadSent: perCellBreakdown.map((c) => ({
+					cellId: c.cellId,
+					userMessage: c.userMessage
+				})),
+				cellBreakdown: perCellBreakdown.map((c) => {
+					// Parse the user message to extract cell state/neighborhood
+					let currentState: 0 | 1 = 0;
+					let aliveNeighborCount = 0;
+					let neighborhood: Array<[number, number, 0 | 1]> = [];
+					let history: Array<0 | 1> | undefined;
+					try {
+						const parsed = JSON.parse(c.userMessage) as {
+							state?: unknown;
+							neighbors?: unknown;
+							neighborhood?: unknown;
+							history?: unknown;
+						};
+						currentState = Number(parsed.state ?? 0) === 1 ? 1 : 0;
+						aliveNeighborCount = typeof parsed.neighbors === 'number' ? parsed.neighbors : 0;
+						if (Array.isArray(parsed.neighborhood)) {
+							neighborhood = (parsed.neighborhood as Array<[number, number, 0 | 1]>);
+						}
+						if (Array.isArray(parsed.history)) {
+							history = parsed.history as Array<0 | 1>;
+						}
+					} catch { /* ignore */ }
+
+					// Parse decision from response
+					let decision: 0 | 1 | null = null;
+					let color: string | undefined;
+					try {
+						const parsed = JSON.parse(c.response) as { state?: unknown; color?: unknown };
+						if (parsed.state === 0 || parsed.state === 1) decision = parsed.state as 0 | 1;
+						if (typeof parsed.color === 'string') color = parsed.color;
+					} catch { /* ignore */ }
+
+					// Extract x/y from system prompt heuristic (Position: (X, Y))
+					let x = -1, y = -1;
+					const posMatch = c.systemPrompt.match(/Position:\s*\((\d+),\s*(\d+)\)/);
+					if (posMatch) { x = Number(posMatch[1]); y = Number(posMatch[2]); }
+
+					return {
+						cellId: c.cellId,
+						x,
+						y,
+						currentState,
+						aliveNeighborCount,
+						neighborhood,
+						history,
+						decision,
+						color
+					};
+				}),
+				response: {
+					rawContent: '',
+					decisions: perCellBreakdown
+						.map((c) => {
+							let state: 0 | 1 = 0;
+							let color: string | undefined;
+							try {
+								const p = JSON.parse(c.response) as { state?: unknown; color?: unknown };
+								state = Number(p.state) === 1 ? 1 : 0;
+								if (typeof p.color === 'string') color = p.color;
+							} catch { /* ignore */ }
+							return { cellId: c.cellId, state, color };
+						})
+						.filter((d) => perCellBreakdown.find((c) => c.cellId === d.cellId)?.ok),
+					usage: null
+				},
+				latencyMs: results.length > 0 ? totalLatencyMs / results.length : 0
+			});
+		} catch (logErr) {
+			console.warn('[NLCA LOG] decide logging error:', logErr instanceof Error ? logErr.message : String(logErr));
 		}
 	}
 

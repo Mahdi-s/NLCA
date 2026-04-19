@@ -50,7 +50,19 @@
 			<span class="dot">·</span>
 			<span><span class="k">Stored</span> <span class="v">{experiment.progress.current}/{experiment.progress.target}</span></span>
 			<span class="dot">·</span>
-			<span><span class="k">Cost</span> <span class="v cost">${experiment.totalCost.toFixed(4)}</span></span>
+			{#if experiment.pricingUnknown && experiment.totalCost === 0}
+				<span title="This provider doesn't publish per-token pricing for this model."><span class="k">Cost</span> <span class="v muted">—</span></span>
+			{:else}
+				<span
+					title={`Live cost accumulating from actual usage. Projected full-run cost: $${experiment.estimatedCost.toFixed(4)}.`}
+				>
+					<span class="k">Cost</span>
+					<span class="v cost">${experiment.totalCost.toFixed(4)}</span>
+					{#if experiment.estimatedCost > 0}
+						<span class="v muted">/ ~${experiment.estimatedCost.toFixed(4)}</span>
+					{/if}
+				</span>
+			{/if}
 			{#if experiment.lastLatencyMs != null}
 				<span class="dot">·</span>
 				<span><span class="k">Latency</span> <span class="v">{Math.round(experiment.lastLatencyMs)}ms</span></span>
@@ -63,6 +75,10 @@
 				<span class="err">{experiment.errorMessage}</span>
 			{/if}
 		</div>
+
+		{#if experiment.noTapeData}
+			<div class="no-data-banner">Frame data unavailable for this experiment</div>
+		{/if}
 	{/if}
 </div>
 
@@ -135,6 +151,12 @@
 		font-variant-numeric: tabular-nums;
 	}
 
+	.info-row .v.muted {
+		color: var(--ui-text, #888);
+		font-weight: 400;
+		margin-left: 2px;
+	}
+
 	.info-row .mono {
 		font-family: 'SF Mono', 'Fira Code', monospace;
 	}
@@ -172,5 +194,15 @@
 	.err {
 		color: #ef4444;
 		font-size: 11px;
+	}
+
+	.no-data-banner {
+		color: #f59e0b;
+		font-size: 11px;
+		font-style: italic;
+		padding: 4px 8px;
+		background: rgba(245, 158, 11, 0.08);
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		border-radius: 6px;
 	}
 </style>

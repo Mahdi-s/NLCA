@@ -32,71 +32,86 @@ export const PROMPT_PRESETS: PromptPreset[] = [
 		name: 'Filled Square',
 		category: 'basic',
 		description: 'Solid square in the center of the grid',
-		task: `Form a filled square in the center of the grid.
+		task: `Together with your neighbors, form a solid filled square in the middle of the grid.
 
-Rules:
-1. If your x coordinate is between 3 and 7 (inclusive) AND your y coordinate is between 3 and 7 (inclusive) → output 1
-2. Otherwise → output 0
-3. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- A single coherent square block centered on the grid, roughly 40% of the grid's width/height on each side.
+
+Your decision:
+- Let centerX = gridWidth / 2 and centerY = gridHeight / 2.
+- Let halfSide = max(2, floor(min(gridWidth, gridHeight) * 0.20)).
+- If |x - centerX| <= halfSide AND |y - centerY| <= halfSide → join the square (state=1).
+- Otherwise → stay outside (state=0).
+- If you are right at the edge and unsure, use your neighborhood: if most of your neighbors on the "inside" side are alive, close the edge; if most are dead, stay out.`
 	},
 	{
 		id: 'hollow-square',
 		name: 'Hollow Square',
 		category: 'basic',
 		description: 'Square border/outline only',
-		task: `Form a hollow square (border only) in the center of the grid.
+		task: `Together with your neighbors, draw the border of a square centered on the grid — only the outline, no fill.
 
-Rules:
-1. Calculate if you're on the border of a square from (2,2) to (8,8)
-2. If (x == 2 OR x == 8) AND (y >= 2 AND y <= 8) → output 1 (left/right edges)
-3. If (y == 2 OR y == 8) AND (x >= 2 AND x <= 8) → output 1 (top/bottom edges)
-4. Otherwise → output 0
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- A single square ring one cell thick, centered on the grid.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let halfSide = max(2, floor(min(gridWidth, gridHeight) * 0.25)).
+- You are on the border if max(|x - centerX|, |y - centerY|) == halfSide.
+- If you are on the border → state=1. Otherwise → state=0.
+- Near the corners, coordinate with your diagonal neighbors so the ring closes cleanly (no gaps and no double-thick bulges).`
 	},
 	{
 		id: 'filled-circle',
 		name: 'Filled Circle',
 		category: 'basic',
 		description: 'Circle based on distance from center',
-		task: `Form a filled circle centered on the grid.
+		task: `Cooperate with your neighbors to form a single filled disc centered on the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. Calculate your distance from center: distance = sqrt((x - centerX)² + (y - centerY)²)
-3. The radius should be about 1/3 of the smaller grid dimension, so radius = floor(min(gridWidth, gridHeight) / 3)
-4. If distance <= radius → output 1
-5. Otherwise → output 0
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- One round, solid circle of cells at the middle of the grid.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let radius = max(2, floor(min(gridWidth, gridHeight) / 3)).
+- Compute d = sqrt((x - centerX)² + (y - centerY)²).
+- If d <= radius → state=1 (join the disc). Otherwise → state=0.
+- If d is right around the radius, look at your neighbors: match whatever the closest 2–3 neighbors on the radial boundary are doing so the edge is smooth.`
 	},
 	{
 		id: 'ring',
 		name: 'Ring',
 		category: 'basic',
 		description: 'Hollow circle (donut shape)',
-		task: `Form a ring (hollow circle) centered on the grid.
+		task: `Cooperate with your neighbors to form a single hollow ring (donut) centered on the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. Calculate your distance from center: distance = sqrt((x - centerX)² + (y - centerY)²)
-3. Inner radius = 2, outer radius = 4
-4. If distance >= innerRadius AND distance <= outerRadius → output 1
-5. Otherwise → output 0
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- A circular band of alive cells with a clear hole in the middle and clear empty space outside.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let outer = max(3, floor(min(gridWidth, gridHeight) * 0.40)).
+- Let inner = max(1, outer - 2).
+- Compute d = sqrt((x - centerX)² + (y - centerY)²).
+- If inner <= d <= outer → state=1 (part of the ring). Otherwise → state=0.
+- When ambiguous, keep the band consistent with your neighbors' states along the ring rather than leaving isolated gaps.`
 	},
 	{
 		id: 'diamond',
 		name: 'Diamond',
 		category: 'basic',
 		description: 'Rotated square (45 degrees)',
-		task: `Form a diamond shape (rotated square) centered on the grid.
+		task: `Cooperate with your neighbors to form a single filled diamond (rotated square) centered on the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. Calculate your Manhattan distance from center: distance = |x - centerX| + |y - centerY|
-3. The diamond radius should be about 1/3 of the smaller grid dimension
-4. If distance <= radius (e.g., 3 or 4) → output 1
-5. Otherwise → output 0
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- One clean diamond silhouette at the middle — pointed at top, bottom, left, right.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let radius = max(3, floor(min(gridWidth, gridHeight) / 3)).
+- Compute Manhattan distance m = |x - centerX| + |y - centerY|.
+- If m <= radius → state=1 (join the diamond). Otherwise → state=0.
+- Tie-breaking on the boundary: agree with your diagonal neighbors so the four edges stay straight rather than jagged.`
 	},
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -107,76 +122,91 @@ Rules:
 		name: 'Cross (+)',
 		category: 'complex',
 		description: 'Plus sign through the center',
-		task: `Form a cross (plus sign) centered on the grid.
+		task: `Cooperate with your neighbors to form a plus-sign (+) centered on the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. The cross arms should be 1-2 cells thick
-3. If x == centerX AND y is between 1 and gridHeight-2 → output 1 (vertical arm)
-4. If y == centerY AND x is between 1 and gridWidth-2 → output 1 (horizontal arm)
-5. Otherwise → output 0
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Two straight arms, one vertical and one horizontal, crossing at the center.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let armHalfThickness = 0 (arms are one cell thick). Let margin = max(1, floor(min(gridWidth, gridHeight) * 0.1)).
+- Vertical arm: x == centerX AND margin <= y <= gridHeight - 1 - margin.
+- Horizontal arm: y == centerY AND margin <= x <= gridWidth - 1 - margin.
+- If you match either arm → state=1. Otherwise → state=0.
+- Keep the arms consistent with your in-line neighbors so they render as continuous lines, not dotted.`
 	},
 	{
 		id: 'x-shape',
 		name: 'X Shape',
 		category: 'complex',
 		description: 'Diagonal cross through the center',
-		task: `Form an X shape (diagonal cross) centered on the grid.
+		task: `Cooperate with your neighbors to form an X (two diagonals crossing at the center).
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. You are on a diagonal if your offset from center satisfies: |x - centerX| == |y - centerY|
-3. If |x - centerX| == |y - centerY| AND your position is within the grid bounds → output 1
-4. Otherwise → output 0
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Two diagonal lines from corner to corner, meeting at the middle.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- You sit on a diagonal if |x - centerX| == |y - centerY|.
+- Stay within a margin of max(1, floor(min(gridWidth, gridHeight) * 0.1)) from each edge so the X doesn't touch the grid boundary.
+- If both conditions hold → state=1. Otherwise → state=0.
+- Along each diagonal, agree with your diagonal neighbors so the line stays unbroken.`
 	},
 	{
 		id: 'triangle',
 		name: 'Triangle',
 		category: 'complex',
 		description: 'Upward-pointing triangle',
-		task: `Form an upward-pointing filled triangle.
+		task: `Cooperate with your neighbors to form a single upward-pointing filled triangle.
 
-Rules:
-1. The triangle apex (top point) is at the center-top: (centerX, 1) where centerX = floor(gridWidth/2)
-2. The base spans the lower portion of the grid
-3. For each row y, the triangle widens: cells within |x - centerX| <= (y - 1) should be alive
-4. If y >= 1 AND y <= gridHeight - 2 AND |x - centerX| <= (y - 1) → output 1
-5. Otherwise → output 0
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Apex at the top-center, base along the bottom rows.
+
+Your decision:
+- Let centerX = gridWidth / 2.
+- Let apexY = max(1, floor(gridHeight * 0.15)).
+- Let baseY = gridHeight - 1 - max(1, floor(gridHeight * 0.15)).
+- If apexY <= y <= baseY AND |x - centerX| <= (y - apexY) → state=1. Otherwise → state=0.
+- At the slanted edges, look at your neighbors along the same edge and match them so the triangle's sides stay straight.`
 	},
 	{
 		id: 'heart',
 		name: 'Heart',
 		category: 'complex',
 		description: 'Heart shape (challenging)',
-		task: `Form a heart shape centered on the grid.
+		task: `Cooperate with your neighbors to form a single heart shape at the center of the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. A heart can be approximated: the top half has two bumps, the bottom comes to a point
-3. For the top half (y < centerY): two circles centered at (centerX - 2, centerY - 1) and (centerX + 2, centerY - 1) with radius ~2
-4. For the bottom half (y >= centerY): a triangular region pointing down
-5. Use these conditions combined: if in either top circle OR in the bottom triangle region → output 1
-6. This is approximate - do your best to form a recognizable heart shape
-7. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Two rounded bumps on top forming the lobes, a V-shaped point at the bottom.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let lobeRadius = max(2, floor(min(gridWidth, gridHeight) * 0.18)).
+- Let lobeOffset = lobeRadius. The two lobe centers sit at (centerX - lobeOffset, centerY - 1) and (centerX + lobeOffset, centerY - 1).
+- Top half (y <= centerY): you are alive if your distance to either lobe center is <= lobeRadius.
+- Bottom half (y > centerY): you are alive if |x - centerX| <= max(0, (gridHeight - 1 - y) * 1.2) AND y <= gridHeight - 2 (the point tapers as y grows).
+- Otherwise → state=0.
+- Along the cleft between the two lobes at centerX, coordinate with your neighbors so the notch is visible (don't fill it in).`
 	},
 	{
 		id: 'star',
 		name: 'Star',
 		category: 'complex',
 		description: 'Five-pointed star shape',
-		task: `Form a five-pointed star centered on the grid.
+		task: `Cooperate with your neighbors to form a single five-pointed star at the center of the grid.
 
-Rules:
-1. The center of the grid is at (centerX, centerY) where centerX = floor(gridWidth/2), centerY = floor(gridHeight/2)
-2. A star has 5 points radiating outward and 5 inner valleys
-3. One approach: combine a small inner pentagon with 5 triangular points
-4. Points should be at angles 90°, 162°, 234°, 306°, 18° from center (every 72°, starting at top)
-5. If your position falls within a triangular region pointing to one of these angles → output 1
-6. This is geometric - approximate as best you can based on your coordinates
-7. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Five sharp points radiating outward, five shorter valleys between them, with a solid body in the middle.
+
+Your decision:
+- Let centerX = gridWidth / 2, centerY = gridHeight / 2.
+- Let rOuter = max(3, floor(min(gridWidth, gridHeight) * 0.40)).
+- Let rInner = max(2, floor(rOuter * 0.5)).
+- Compute your distance d = sqrt((x - centerX)² + (y - centerY)²) and angle θ = atan2(y - centerY, x - centerX) (radians).
+- Points sit every 72° starting at the top (θ = -π/2). For your angle θ, let φ = ((θ + π/2) mod (2π/5)) − π/5 (distance to the nearest point axis, signed).
+- Let rTarget = rInner + (rOuter - rInner) * max(0, 1 - |φ| / (π/5)).
+- If d <= rTarget → state=1. Otherwise → state=0.
+- If you are right on the boundary, match your neighbors along the same star-arm so the tip stays crisp.`
 	},
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -187,71 +217,71 @@ Rules:
 		name: 'Checkerboard',
 		category: 'patterns',
 		description: 'Alternating cells like a chess board',
-		task: `Form a checkerboard pattern across the entire grid.
+		task: `Together with your neighbors, tile the whole grid in a checkerboard pattern.
 
-Rules:
-1. Checkerboard means alternating cells: (x + y) determines the color
-2. If (x + y) is even → output 1
-3. If (x + y) is odd → output 0
-4. This creates a classic checkerboard/chess board pattern
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Every alive cell is surrounded only by dead cells on its 4 cardinal sides, and vice versa.
+
+Your decision:
+- If (x + y) is even → state=1. Otherwise → state=0.
+- Your neighbors on the N/E/S/W sides should all be the opposite of you — if they are, you are in agreement and stable.`
 	},
 	{
 		id: 'vertical-stripes',
 		name: 'Vertical Stripes',
 		category: 'patterns',
 		description: 'Vertical lines across the grid',
-		task: `Form vertical stripes across the grid.
+		task: `Together with your neighbors, paint the grid in vertical stripes two cells wide.
 
-Rules:
-1. Stripes should be 2 cells wide, alternating on/off
-2. If floor(x / 2) is even → output 1
-3. If floor(x / 2) is odd → output 0
-4. This creates alternating vertical bands
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Columns alternating alive/dead in bands of width 2 (alive-alive-dead-dead-alive-alive...).
+
+Your decision:
+- If floor(x / 2) is even → state=1. Otherwise → state=0.
+- Your left and right neighbors inside the same band should match your state; those crossing a band edge should be opposite.`
 	},
 	{
 		id: 'horizontal-stripes',
 		name: 'Horizontal Stripes',
 		category: 'patterns',
 		description: 'Horizontal lines across the grid',
-		task: `Form horizontal stripes across the grid.
+		task: `Together with your neighbors, paint the grid in horizontal stripes two cells wide.
 
-Rules:
-1. Stripes should be 2 cells wide, alternating on/off
-2. If floor(y / 2) is even → output 1
-3. If floor(y / 2) is odd → output 0
-4. This creates alternating horizontal bands
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Rows alternating alive/dead in bands of height 2.
+
+Your decision:
+- If floor(y / 2) is even → state=1. Otherwise → state=0.
+- Your up and down neighbors within the same band should match your state; those across a band edge should be opposite.`
 	},
 	{
 		id: 'diagonal-stripes',
 		name: 'Diagonal Stripes',
 		category: 'patterns',
 		description: 'Diagonal lines across the grid',
-		task: `Form diagonal stripes across the grid (from top-left to bottom-right).
+		task: `Together with your neighbors, paint the grid in diagonal stripes running top-left to bottom-right.
 
-Rules:
-1. Diagonal stripes follow lines where (x + y) is constant
-2. If floor((x + y) / 2) is even → output 1
-3. If floor((x + y) / 2) is odd → output 0
-4. This creates diagonal bands running from top-left to bottom-right
-5. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- Bands of width 2 that all slope the same direction across the grid.
+
+Your decision:
+- If floor((x + y) / 2) is even → state=1. Otherwise → state=0.
+- Your diagonal neighbors (dx=1, dy=1) and (dx=-1, dy=-1) within the same band should match your state; perpendicular neighbors on the (dx=1, dy=-1) axis should alternate.`
 	},
 	{
 		id: 'gradient',
 		name: 'Gradient',
 		category: 'patterns',
 		description: 'Density increases left to right',
-		task: `Form a horizontal gradient: sparse on left, dense on right.
+		task: `Cooperate to paint a horizontal density gradient — sparse on the left side of the grid, dense on the right.
 
-Rules:
-1. Your probability of being alive increases with your x coordinate
-2. Calculate probability: p = x / gridWidth
-3. Use a deterministic rule based on position: if (x * 7 + y * 13) mod gridWidth < x → output 1
-4. Otherwise → output 0
-5. This creates a pattern that is sparse on the left and dense on the right
-6. Your previous state does not matter - only your position determines your state`
+Shared goal:
+- The fraction of alive cells per column increases smoothly from near 0 on the left edge to near 1 on the right edge.
+
+Your decision:
+- Let the target density for your column be p = x / (gridWidth - 1).
+- Use an ordered-dither step: let t = (y mod 4) / 4 + 1 / 8. If p > t → state=1. Otherwise → state=0.
+- This produces a stable, deterministic gradient where every column shares the same pattern across y, and denser columns simply flip more rows on.`
 	},
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -319,6 +349,651 @@ Scene:
 - Ocean: darker band in the bottom half.
 - Reflection: a vertical shimmering stripe below the moon (alternating bright/dim pixels).
 `
+	},
+	{
+		id: 'scene-lighthouse-night',
+		name: 'Scene: Lighthouse at Night',
+		category: 'scenes',
+		description: 'Lighthouse on a rocky cliff with a sweeping light beam',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#0A1128".
+
+Scene:
+- Night sky: deep indigo at top fading to near-black near the horizon. Sprinkle a few bright stars (single pixels) in the upper third.
+- Sea: darker navy band below the horizon with a couple of brighter horizontal reflection pixels.
+- Cliff: jagged dark rock shape rising from one side of the grid (~1/3 width), use a cold grey.
+- Lighthouse: a tall narrow tower on top of the cliff (2 cells wide), white with one or two red accent bands. Small lantern cap at top in warm yellow.
+- Light beam: a diagonal wedge of warm yellow pixels emanating from the lantern toward the opposite side of the grid — brightest near the source, fading with distance.
+`
+	},
+	{
+		id: 'scene-desert-cactus',
+		name: 'Scene: Desert with Cactus',
+		category: 'scenes',
+		description: 'Sand dunes, a saguaro cactus, and a hot sun',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#F5A25D".
+
+Scene:
+- Sky: warm peach/orange gradient, lighter near horizon.
+- Sun: large pale-yellow disc in the upper portion (use distance-from-center threshold).
+- Dunes: two overlapping rolling curves across the lower half, lighter tan in front, darker ochre behind.
+- Cactus: a saguaro silhouette near the center — a thick vertical trunk (2–3 cells wide) in deep green with two upward-curved arms branching off at different heights.
+- Small rocks or pebbles: a couple of dark brown single-pixel specks scattered on the dune surface.
+`
+	},
+	{
+		id: 'scene-volcano-eruption',
+		name: 'Scene: Erupting Volcano',
+		category: 'scenes',
+		description: 'Mountain spewing lava with ash cloud and glowing sky',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#FF4500".
+
+Scene:
+- Sky: angry gradient from deep purple at top to hot red/orange near the volcano.
+- Volcano: a large triangular silhouette occupying the lower ~60% of the grid. Dark grey-black rock, lighter grey ridgelines on one edge.
+- Crater: a small notch at the apex.
+- Lava flow: bright orange/yellow streaks running down one flank of the mountain — hottest at the source, cooling to dark red at the base.
+- Ash cloud: a billowing dark-grey plume rising above the crater, growing wider as it rises. Scatter a few bright ember pixels inside the plume.
+- Ground: scorched black/red at the volcano's foot.
+`
+	},
+	{
+		id: 'scene-campfire-stars',
+		name: 'Scene: Campfire Under Stars',
+		category: 'scenes',
+		description: 'Nighttime campsite with a warm fire and a starry sky',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#1A1330".
+
+Scene:
+- Sky: deep navy-to-black gradient. Scatter ~8–12 bright star pixels (white or very pale yellow) in the upper two-thirds using a deterministic hash of (x, y).
+- Ground: dark earthy brown band across the bottom (~20% of grid).
+- Tent: a simple triangular silhouette to one side, dark teal or olive. Small vertical pole line at the apex.
+- Campfire: a small cluster of 4–6 pixels near the center-bottom — hottest yellow at the core, orange around it, deep red at the outer edges.
+- Glow: a faint warm tint on ground cells immediately surrounding the fire.
+- Silhouetted trees: 2–3 dark pine tree outlines on the horizon behind the tent.
+`
+	},
+	{
+		id: 'scene-coral-reef',
+		name: 'Scene: Underwater Coral Reef',
+		category: 'scenes',
+		description: 'Blue water with coral stacks, fish, and light shafts',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#08415C".
+
+Scene:
+- Water: vertical gradient — bright aqua near the top, deep navy near the bottom.
+- Light shafts: two or three diagonal bands of slightly-lighter blue reaching down from the surface.
+- Sand floor: pale yellow band across the bottom 2–3 rows.
+- Coral stacks: 2–3 vertical coral structures rising from the sand in different colors — coral-pink, mustard-yellow, and magenta-purple. Use varied widths and branching tips.
+- Seaweed: a few thin dark-green wavy vertical lines.
+- Fish: 3–5 tiny fish silhouettes (2-pixel clusters) in bright accent colors scattered at different heights.
+- Bubbles: a handful of single-pixel pale highlights rising in a column.
+`
+	},
+	{
+		id: 'scene-city-skyline',
+		name: 'Scene: City Skyline at Dusk',
+		category: 'scenes',
+		description: 'Building silhouettes against a pink/orange evening sky',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#F5A3B4".
+
+Scene:
+- Sky: rich dusk gradient — lavender/purple at the top, pink in the middle, warm amber near the horizon.
+- Sun: a flattened half-disc sitting on the horizon line in bright gold.
+- Buildings: a jagged skyline silhouette across the lower half — at least 5 rectangular buildings of different heights and widths, all very dark indigo. Include one taller skyscraper.
+- Windows: small lit windows scattered across the building silhouettes — use warm yellow single pixels in a deterministic pattern (e.g. based on (x + y) parity on certain rows).
+- Reflection: a muted version of the sky colors mirrored on a water strip at the very bottom, with faint horizontal ripple lines.
+`
+	},
+	{
+		id: 'scene-spaceship-planet',
+		name: 'Scene: Spaceship Over Ringed Planet',
+		category: 'scenes',
+		description: 'Starfield, a ringed planet, and a small spaceship',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#0B0221".
+
+Scene:
+- Space: deep purple-black background everywhere by default.
+- Stars: many tiny bright pixels across the whole grid, varied brightness (white / pale blue / pale yellow). Use a deterministic hash of (x, y) so only a small fraction are lit.
+- Nebula wisps: a few soft patches of violet/rose tint in the upper portion.
+- Planet: a large disc occupying the lower-right quadrant, orange/ochre body with one darker band across the middle. Smooth circular silhouette from (x,y) distance check.
+- Rings: a thin ellipse of lighter cream cutting across the planet at a tilt (passing behind and then in front).
+- Spaceship: a small bright silver/cyan cluster (5–8 pixels) in the upper-left, with a faint warm engine trail of 2–3 pixels behind it.
+`
+	},
+	{
+		id: 'scene-hot-air-balloon',
+		name: 'Scene: Hot Air Balloon',
+		category: 'scenes',
+		description: 'Colorful balloon drifting over distant hills and clouds',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#9BD3F7".
+
+Scene:
+- Sky: bright cheerful blue with a soft gradient (lighter near horizon).
+- Clouds: 2–3 puffy white cloud shapes at varied heights, slightly off-white with lighter highlights on top.
+- Distant hills: soft green rolling silhouettes across the bottom third.
+- Balloon envelope: a large rounded teardrop/circle in the upper-center. Paint it with 3 vertical bands of contrasting colors — red, yellow, and blue stripes for a festival look.
+- Basket: a small brown rectangular basket directly beneath the balloon, connected by 2–3 thin ropes (vertical lines).
+- Flame: a tiny orange/yellow flicker at the top of the basket, just beneath the balloon mouth.
+`
+	},
+	{
+		id: 'scene-tropical-island',
+		name: 'Scene: Tropical Island',
+		category: 'scenes',
+		description: 'Small island with a palm tree, turquoise ocean, and bright sun',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#FFD76E".
+
+Scene:
+- Sky: pale cyan-to-white gradient.
+- Sun: bright yellow disc in the upper area with a soft paler halo ring around it.
+- Ocean: turquoise band across the middle, with 2–3 thin horizontal wave lines in lighter aqua suggesting ripples.
+- Island: a small arched sand mound near the center-bottom — golden-tan color.
+- Palm tree: a curved dark-brown trunk rising from the island, with 4–5 fronds fanning out at the top in two shades of green.
+- Coconuts: 2 small dark-brown dots where the fronds meet the trunk.
+- Reflection: a faint vertical shimmer below the island and sun.
+`
+	},
+	{
+		id: 'scene-autumn-forest',
+		name: 'Scene: Autumn Forest',
+		category: 'scenes',
+		description: 'Red, orange, and yellow trees with falling leaves',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#D4572A".
+
+Scene:
+- Sky: soft hazy gradient from pale blue at top to creamy peach near the tree line.
+- Trees: 3–5 tree silhouettes across the middle of the grid at varying x. Each tree is a thin dark-brown trunk (1 cell wide) topped with a round canopy. Vary the canopy color per tree — pick from deep red, burnt orange, golden yellow, and rust brown.
+- Ground: warm brown earth band at the bottom with scattered fallen-leaf pixels in the same autumn palette.
+- Falling leaves: 6–10 single-pixel leaves in red/orange/yellow scattered across the air between the trees, positioned with a deterministic hash so they don't clump.
+- Distant trees: a faint purplish silhouette strip on the horizon suggesting depth.
+`
+	},
+	{
+		id: 'scene-cherry-blossom',
+		name: 'Scene: Cherry Blossom Tree',
+		category: 'scenes',
+		description: 'A pink sakura tree against a calm spring sky',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#FFC7E0".
+
+Scene:
+- Sky: pale baby-blue with a very soft gradient toward lavender-pink near the horizon.
+- Ground: soft mossy-green band at the bottom, a few tiny grass tufts in slightly darker green.
+- Tree trunk: a twisting dark-brown trunk rising from the ground-left, with 2–3 main branches spreading up and to the right.
+- Blossoms: a dense cloud of pink pixels covering the branch tips — mix at least two pinks (light cotton-candy pink and a slightly deeper rose) for depth. Include a few pure-white highlight pixels.
+- Falling petals: 4–6 single pink pixels drifting in the air around the tree.
+- Distant pond: a narrow horizontal band of pale blue near the ground mirroring the sky.
+`
+	},
+	{
+		id: 'scene-castle-hill',
+		name: 'Scene: Castle on a Hill',
+		category: 'scenes',
+		description: 'Silhouetted castle on a grassy hill under a moonlit sky',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#2B2D5C".
+
+Scene:
+- Sky: deep indigo gradient with a hint of violet near the horizon.
+- Moon: a bright pale-yellow disc with a subtle glow ring in the upper quadrant.
+- Stars: a sparse sprinkle of tiny white/pale-blue pixels.
+- Hill: a rounded dark-green/teal mound occupying the lower half of the grid.
+- Castle silhouette on the hilltop: central keep rectangle with two flanking towers (taller). Top of each tower has crenellations (a row of alternating tall/short pixels).
+- Windows: 2–3 tiny warm-yellow lit windows in the keep and towers.
+- Flag: a single-pixel flag on top of the tallest tower, in deep red.
+- Path: a subtle winding strip of lighter green/tan leading from the castle down the hill.
+`
+	},
+	{
+		id: 'scene-pumpkin-patch',
+		name: 'Scene: Pumpkin Patch at Night',
+		category: 'scenes',
+		description: 'Halloween scene with pumpkins, a spooky tree, and a big moon',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#F7872F".
+
+Scene:
+- Sky: midnight purple-to-black gradient.
+- Moon: a large pale-orange/cream full moon behind the tree, slightly off-center.
+- Bats: 2–3 tiny M-shaped dark silhouettes flying across the sky.
+- Spooky tree: a bare crooked dark tree silhouette on one side, with thin branches reaching toward the moon.
+- Ground: dark muted brown/olive band across the bottom.
+- Pumpkins: 3–5 round orange pumpkins at varied positions on the ground, each with a dark-green stem on top and a few darker vertical ridge lines for shape.
+- One jack-o'-lantern: choose one pumpkin and give it a glowing yellow face (two triangle-eyes and a jagged mouth).
+- Fog: a few low horizontal strips of faint grey just above the ground.
+`
+	},
+	{
+		id: 'scene-submarine-deep',
+		name: 'Scene: Submarine in the Deep',
+		category: 'scenes',
+		description: 'Yellow submarine descending through dark water with bioluminescent fish',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#02162B".
+
+Scene:
+- Water: steep gradient — midnight blue at the top to almost-black at the bottom, suggesting great depth.
+- Submarine: a yellow ovoid body in the middle-right with a small top tower (conning tower) and a single round porthole in warm white. Add a thin dark outline.
+- Propeller: 2–3 small dark pixels trailing behind the sub.
+- Headlight beam: a cone of pale yellow pixels extending forward from the front of the sub, dimming with distance.
+- Bioluminescent fish: 4–6 tiny dots in cyan/teal/magenta scattered in the dark water, concentrated at varied depths.
+- Seafloor: suggest a jagged darker ridge across the very bottom in murky grey-green.
+- Bubbles: a column of small pale dots rising from near the sub.
+`
+	},
+	{
+		id: 'scene-alien-planet',
+		name: 'Scene: Alien Planet',
+		category: 'scenes',
+		description: 'Purple landscape with twin moons and strange rock spires',
+		task: `You are painting a pixel-art scene by choosing your cell's color.
+
+Color mode rules (IMPORTANT):
+1. If you are part of the scene, output {"state":1,"color":"#RRGGBB"}.
+2. If you are not part of the scene, output {"state":0,"color":"#RRGGBB"}.
+3. Use ONLY uppercase hex colors like "#5D2A8A".
+
+Scene:
+- Sky: eerie gradient from deep magenta at top to teal near the horizon.
+- Twin moons: two differently-sized pale discs in the upper sky — one cream-white, one turquoise.
+- Stars: a handful of sharp bright pixels sprinkled across the sky.
+- Mountains: a low silhouette of jagged dark-purple peaks on the horizon.
+- Ground: alien magenta/violet rock plain with subtle darker cracks (thin lines).
+- Rock spires: 2–3 tall impossibly-thin vertical spires rising from the ground in dark purple with a lighter highlight on one side.
+- Glowing crystals: 3–5 small bright cyan/green single-pixel crystals on the ground, each with one diagonal pixel of glow adjacent.
+- Atmosphere: a thin band of aurora-like green shimmer running horizontally in the middle sky.
+`
+	},
+	{
+		id: 'face-generic-portrait',
+		name: 'Face: Generic Close-up Portrait',
+		category: 'scenes',
+		description: 'Basic symmetric human face — discovered collaboratively',
+		task: `Together with your neighbors, paint a recognizable close-up portrait of a human face.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- Pick colors collectively. No single cell owns the palette.
+
+Shared goal:
+- One coherent face centered on the grid, with hair above, two eyes, a nose, and a mouth below, fading to background at the edges. Bilaterally symmetric about the vertical center.
+
+Your decision:
+- From your (x, y), guess which region you probably belong to (background, hair, skin, eye, brow, nose, or mouth) and pick a color consistent with that role.
+- Look at your neighbors' current colors and your own history from previous frames. Early frames will be rough; later frames sharpen as cells settle into matching colors within each region.
+- Stay close to your own last color unless the surrounding pattern clearly asks you to change roles.`
+	},
+	{
+		id: 'face-elderly-man',
+		name: 'Face: Elderly Man with Wrinkles',
+		category: 'scenes',
+		description: 'Weathered older face — features emerge through iteration',
+		task: `Together with your neighbors, paint a close-up portrait of a weathered elderly man.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks the palette. No single cell prescribes it.
+
+Shared goal:
+- A recognizable aged male face, roughly symmetric. Distinguishing traits the group should converge on: grey/white hair or thinning top, bushy brows, deep-set eyes, a fuller nose, a grey beard or moustache covering the jaw.
+
+Your decision:
+- From your (x, y), infer whether you live in background, hair, brow, skin, eye, beard, or mouth.
+- Watch neighbors and your own past frames. Wrinkle lines and beard texture emerge when neighboring cells agree on subtle tone differences — let them form over multiple generations rather than forcing them immediately.`
+	},
+	{
+		id: 'face-baby',
+		name: 'Face: Baby',
+		category: 'scenes',
+		description: 'Round, big-eyed infant face — emerges over frames',
+		task: `Together with your neighbors, paint a close-up portrait of a smiling baby.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group chooses the palette.
+
+Shared goal:
+- A very round, symmetric infant face. Distinguishing traits: oversized eyes, chubby cheeks with a warm flush, a tiny nose, a small smiling mouth, and very sparse hair on top.
+
+Your decision:
+- From your (x, y), guess whether you belong to background, cheek, eye, nose, mouth, or the small hair wisp.
+- Use your neighbors' colors and your own history to stabilise. Round features sharpen when neighbors in the same region converge on the same colour.`
+	},
+	{
+		id: 'face-cat-close-up',
+		name: 'Face: Cat Close-up',
+		category: 'scenes',
+		description: 'Furry cat face — cells cooperate to find features',
+		task: `Together with your neighbors, paint a close-up portrait of a cat.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks fur colour and markings.
+
+Shared goal:
+- A single recognisable cat face centered on the grid, symmetric about the vertical axis. Distinguishing traits: two triangular ears at the top corners, large almond-shaped eyes with vertical slit pupils, a small triangular nose, a simple mouth, and whiskers extending sideways from the cheeks.
+
+Your decision:
+- From your (x, y), guess your role (background, ear, fur, eye, pupil, nose, mouth, or whisker).
+- Let markings (tabby stripes, etc.) emerge through agreement with neighbors over frames — don't invent them on frame 1.`
+	},
+	{
+		id: 'face-robot',
+		name: 'Face: Robot',
+		category: 'scenes',
+		description: 'Mechanical head — layout discovered by the group',
+		task: `Together with your neighbors, paint a close-up portrait of a robot.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group chooses metal tone and accent colour.
+
+Shared goal:
+- A symmetric mechanical head centered on the grid. Distinguishing traits: rectangular or rounded metallic body, two glowing eyes, some kind of antenna or sensor on top, and a grille/mouth.
+
+Your decision:
+- From your (x, y), guess whether you are background, metal plate, rivet, eye glow, antenna, or mouth grille.
+- Glow, rivets, and panel seams should emerge as neighbors settle on subtly different tones. Use your past frames to stay stable once your role is clear.`
+	},
+	{
+		id: 'face-astronaut-helmet',
+		name: 'Face: Astronaut in Helmet',
+		category: 'scenes',
+		description: 'Face peering through a visor — discovered iteratively',
+		task: `Together with your neighbors, paint a close-up portrait of an astronaut inside a helmet.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks the helmet, visor, and background palette.
+
+Shared goal:
+- A symmetric astronaut head against deep space. Distinguishing traits: a round light-coloured helmet enclosing the face, a darker visor window in the middle, a dim face visible behind the visor, and stars scattered in the background.
+
+Your decision:
+- From your (x, y), guess your role (star/background, helmet shell, visor glass, face behind visor, or neck seal).
+- Visor reflections emerge when helmet-edge cells settle on brighter values than glass cells over multiple frames. Don't invent them on the first frame.`
+	},
+	{
+		id: 'face-viking-warrior',
+		name: 'Face: Viking Warrior',
+		category: 'scenes',
+		description: 'Horned-helmet warrior — beard and features emerge',
+		task: `Together with your neighbors, paint a close-up portrait of a Viking warrior.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group chooses skin, helmet, and beard tones.
+
+Shared goal:
+- A symmetric, stern male warrior face centered on the grid. Distinguishing traits: a metallic helmet on top with two horns curving outward, piercing eyes beneath the helmet rim, a thick beard covering the lower half of the face, possibly with visible braids.
+
+Your decision:
+- From your (x, y), guess your role (background, helmet metal, horn, skin, eye, beard).
+- Braid texture and helmet rivets should appear gradually — let neighboring cells within the beard settle into alternating lighter/darker tones over several frames.`
+	},
+	{
+		id: 'face-mona-lisa',
+		name: 'Famous Face: Mona Lisa',
+		category: 'scenes',
+		description: 'Renaissance portrait — iconic features discovered together',
+		task: `Together with your neighbors, paint a pixel-art homage to the Mona Lisa.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group decides the palette collaboratively.
+
+Shared goal:
+- A calm three-quarter-view female portrait in warm earth tones. Distinguishing traits that must be legible: long dark hair parted in the middle, a pale oval face, a subtle faint smile with one corner lifted slightly more than the other, and a hazy landscape background.
+
+Your decision:
+- From your (x, y), guess whether you are distant landscape, hair, skin, eye, smile, or dress.
+- The faint asymmetric smile emerges only when cells around the mouth corners refine their positions across several frames. Don't paint a bold smile on frame 1.`
+	},
+	{
+		id: 'face-einstein',
+		name: 'Famous Face: Einstein',
+		category: 'scenes',
+		description: 'Wild white hair and mustache — emerge over frames',
+		task: `Together with your neighbors, paint a pixel-art homage to Albert Einstein.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks the background tone and hair/skin tones.
+
+Shared goal:
+- A symmetric older male face. Distinguishing traits the group should converge on: a wild, chaotic crown of white/silver hair filling the upper portion (extending beyond the face outline), a thick bushy white mustache covering the upper lip, small lively eyes, and a smooth chin (no beard).
+
+Your decision:
+- From your (x, y), guess if you are background, hair, forehead, brow, eye, nose, mustache, or neckline.
+- The chaotic hair texture emerges when neighboring hair cells settle on small variations in tone rather than a uniform block. Let that happen gradually across frames, using your own history to stay consistent once your role is clear.`
+	},
+	{
+		id: 'face-van-gogh',
+		name: 'Famous Face: Van Gogh Self-Portrait',
+		category: 'scenes',
+		description: 'Red-haired bearded man — bandaged ear emerges',
+		task: `Together with your neighbors, paint a pixel-art homage to Van Gogh's self-portrait with bandaged ear.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks background, hair, and clothing tones.
+
+Shared goal:
+- A mostly-symmetric male face with one deliberate asymmetry: a pale bandage wrapping around one side of the head covering a single ear. Distinguishing traits: red/orange hair and beard, pale skin with warm undertones, a dark hat, intense eyes, and a coat beneath the chin.
+
+Your decision:
+- From your (x, y), guess your role (swirling background, hat, hair, skin, eye, beard, bandage, coat).
+- Swirling brush-stroke textures in the background and the warm red-orange beard should emerge from neighbor agreement over several frames. The bandage must stay on ONE side only — reach consensus with neighbors on which side holds it and keep it consistent across frames.`
+	},
+	{
+		id: 'face-frida-kahlo',
+		name: 'Famous Face: Frida Kahlo',
+		category: 'scenes',
+		description: 'Unibrow, flower crown, bold lips — emerge together',
+		task: `Together with your neighbors, paint a pixel-art homage to Frida Kahlo.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks the skin tone, flower colours, and background.
+
+Shared goal:
+- A symmetric female portrait with strong personality. Distinguishing traits that must be readable: a band of brightly-coloured flowers across the top of the head, a SINGLE continuous eyebrow spanning across the nose (unibrow — do not split it in the middle), confident dark eyes, and bold lips.
+
+Your decision:
+- From your (x, y), guess whether you are background, flower, leaf, hair, skin, brow, eye, nose, lip, or shawl.
+- Flower colours should stay varied and playful — coordinate with neighbors so adjacent flowers pick different hues rather than all matching.
+- Cells along the brow line across the bridge of the nose must agree on staying dark across frames; any split in the middle would break the defining unibrow. Use your history to hold the brow steady once it forms.`
+	},
+	{
+		id: 'face-lincoln',
+		name: 'Famous Face: Abraham Lincoln',
+		category: 'scenes',
+		description: 'Stovepipe hat, gaunt face, chinstrap beard',
+		task: `Together with your neighbors, paint a pixel-art homage to Abraham Lincoln.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks the hat tone, background, and skin tone.
+
+Shared goal:
+- A symmetric, gaunt male portrait. Distinguishing traits: a TALL stovepipe top hat dominating the upper portion of the grid (visibly taller than it is wide), a narrow elongated face beneath, a prominent long nose, a serious mouth with no smile, and a CHINSTRAP beard — hair along the jawline only, with a CLEAN-SHAVEN upper lip (no mustache).
+
+Your decision:
+- From your (x, y), guess if you are background, hat, brim, face, eye, nose, mouth, beard, or collar.
+- The chinstrap beard is the defining feature. Cells above the mouth must agree to stay clean-shaven skin; cells along the jaw must agree to be beard. This boundary sharpens over successive frames as neighbors reinforce each other's roles from past states.`
+	},
+	{
+		id: 'face-geisha',
+		name: 'Famous Face: Geisha',
+		category: 'scenes',
+		description: 'White-painted face, ornate hair, red lower lip',
+		task: `Together with your neighbors, paint a pixel-art portrait of a geisha.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks background, hair ornament colours, and lip/accent tones.
+
+Shared goal:
+- A symmetric female portrait against a dark background. Distinguishing traits: a very pale, almost porcelain face, a tall ornate dark hairstyle on top of the head with a few bright accent ornaments, thin arched brows, subtle eyes, and a small painted lower lip (upper lip stays unpainted like the face).
+
+Your decision:
+- From your (x, y), guess your role (background, hair, ornament, face paint, brow, eye, lower-lip accent, neckline).
+- The defining detail is that only the CENTER of the lower lip is vividly coloured — the upper lip and most of the mouth area stay as pale face. Neighbors across the mouth must agree, frame by frame, to keep most of the mouth region the same as the face; let the tiny red accent stabilise through iteration.`
+	},
+	{
+		id: 'face-samurai',
+		name: 'Famous Face: Samurai (Kabuto Helmet)',
+		category: 'scenes',
+		description: 'Horned helmet, menpo mask, only eyes exposed',
+		task: `Together with your neighbors, paint a pixel-art portrait of a samurai in a full kabuto helmet.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks helmet colour, accent metal, and background.
+
+Shared goal:
+- A symmetric, imposing portrait. Distinguishing traits: a domed helmet filling the upper half with a prominent metallic front-crest (moon or horn shape), side flaps sweeping outward, a narrow horizontal strip of exposed face showing only the EYES, and a dark metal mask covering the lower face.
+
+Your decision:
+- From your (x, y), guess your role (background, helmet body, crest, side flap, exposed skin/eye strip, mouth mask, neck armour).
+- Rim rivets along the helmet edge and crest shine emerge when those cells reach agreement on slightly brighter tones over successive frames.`
+	},
+	{
+		id: 'face-hepburn',
+		name: 'Famous Face: Audrey Hepburn',
+		category: 'scenes',
+		description: 'Updo, oval sunglasses, red lips',
+		task: `Together with your neighbors, paint a pixel-art homage to Audrey Hepburn.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group chooses the palette.
+
+Shared goal:
+- A symmetric elegant female portrait. Distinguishing traits: a tall smooth dark updo on the head, large round dark sunglasses fully covering the eyes (two connected lenses with a thin bridge), pale refined skin, a slender nose, bold red lips, and a high black neckline below.
+
+Your decision:
+- From your (x, y), guess your role (background, hair, brow, sunglasses, skin, nose, lip, neckline).
+- The sunglasses are the signature feature. Cells in the eye region must consensus-agree to be dark lens rather than skin or brow across frames.`
+	},
+	{
+		id: 'face-profile-silhouette',
+		name: 'Face: Side Profile Silhouette',
+		category: 'scenes',
+		description: 'Asymmetric side-profile silhouette',
+		task: `Together with your neighbors, paint a side-profile pixel-art silhouette portrait.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks one solid silhouette colour and one background gradient or tone.
+
+Shared goal:
+- A single head seen from the side, NOT symmetric. The silhouette sits on one half of the grid with the facial features (forehead, nose, upper lip, lips, chin, jaw) protruding toward the other half. Distinguishing landmarks in the profile outline: forehead curve, brow ridge bump, triangular nose tip, philtrum indent, lip double-bump, chin curve, and jaw.
+
+Your decision:
+- From your (x, y), guess whether you are background or silhouette. Agree with neighbors on which side of the grid the face points — once the group commits to a direction, keep it consistent across all frames.
+- The profile's sharpness (especially the nose tip) emerges from neighbours along the silhouette edge agreeing on exactly which cells are inside vs outside.`
+	},
+	{
+		id: 'face-cyclops',
+		name: 'Face: Mythical Cyclops',
+		category: 'scenes',
+		description: 'One giant central eye, stony features',
+		task: `Together with your neighbors, paint a pixel-art portrait of a mythical cyclops.
+
+Output format:
+- Portrait cell: {"state":1,"color":"#RRGGBB"} (uppercase hex).
+- Background cell: {"state":0,"color":"#RRGGBB"} (uppercase hex).
+- The group picks skin and background tones.
+
+Shared goal:
+- A symmetric monstrous face with ONE striking feature: a single large central eye, clearly bigger than a normal human eye. Secondary traits: a heavy single brow above that eye, flat broad nose with just nostrils (no bridge), wide snarling mouth, unkempt hair.
+
+Your decision:
+- From your (x, y), guess your role (background, hair, rough skin, eye, pupil, brow, nostril, mouth, fang).
+- Cells at (centerX, centerY) and a few rows/columns around must cooperate to form ONE eye, not two. Agreement is critical here — no independent sub-eyes should appear on either side. Use your past frames to keep the single eye stable once the group has committed to it.`
 	},
 	{
 		id: 'color-territory-six-sectors',
@@ -626,11 +1301,12 @@ Visualization rule (color):
 		description: 'Start with a blank slate',
 		task: `Describe your custom task here.
 
-Rules:
-1. Define clear conditions for when a cell should output 1 (alive)
-2. Define when a cell should output 0 (dead)
-3. Use your position (x, y) and the grid dimensions to make decisions
-4. Your previous state does not matter unless you want temporal behavior`
+Good prompts frame a shared goal the cells cooperate to form, not a lookup from (x, y) to 0/1.
+
+Suggested structure:
+- Shared goal: what pattern should the whole grid converge on?
+- Your decision: how to use your position, your current state, and your neighbor states to decide state=0 or state=1 each generation.
+- Conflict resolution: what to do when the rule is ambiguous (look at your neighbors to stay consistent with them).`
 	}
 ];
 
@@ -653,40 +1329,40 @@ export function getPresetById(id: string): PromptPreset | undefined {
 // ============================================================================
 
 // Default task description (matches 'filled-square' preset)
-const DEFAULT_TASK = `Form a filled square in the center of the grid.
+const DEFAULT_TASK = `Together with your neighbors, form a solid filled square in the middle of the grid.
 
-Rules:
-1. If your x coordinate is between 3 and 7 (inclusive) AND your y coordinate is between 3 and 7 (inclusive) → output 1
-2. Otherwise → output 0
-3. Your previous state does not matter - only your position determines your state`;
+Shared goal:
+- A single coherent square block centered on the grid, roughly 40% of the grid's width/height on each side.
+
+Your decision:
+- Let centerX = gridWidth / 2 and centerY = gridHeight / 2.
+- Let halfSide = max(2, floor(min(gridWidth, gridHeight) * 0.20)).
+- If |x - centerX| <= halfSide AND |y - centerY| <= halfSide → join the square (state=1).
+- Otherwise → stay outside (state=0).
+- If you are right at the edge and unsure, use your neighborhood: if most of your neighbors on the "inside" side are alive, close the edge; if most are dead, stay out.`;
 
 // Default advanced template with placeholders - provides full CA context
-const DEFAULT_TEMPLATE = `You are an autonomous cell agent in a cellular automaton simulation.
+const DEFAULT_TEMPLATE = `== YOUR POSITION ==
+You occupy cell ({{CELL_X}}, {{CELL_Y}}) on a {{GRID_WIDTH}}×{{GRID_HEIGHT}} grid.
+x increases rightward (0 to {{MAX_X}}), y increases downward (0 to {{MAX_Y}}).
 
-== YOUR IDENTITY ==
-Position: ({{CELL_X}}, {{CELL_Y}}) on a {{GRID_WIDTH}}×{{GRID_HEIGHT}} grid
-Coordinate system: x increases rightward (0 to {{MAX_X}}), y increases downward (0 to {{MAX_Y}})
+== HOW THIS GRID WORKS ==
+{{GRID_WIDTH}}×{{GRID_HEIGHT}} cells update at the same time each generation. Every cell
+reads the current frame (its own state + neighbor states), then all cells
+commit their next state simultaneously. You cooperate with your neighbors
+to accomplish the shared task below — your choice depends on the
+collective pattern the group is trying to form, not only on your position
+alone.
 
-== CELLULAR AUTOMATA CONTEXT ==
-You are one of {{GRID_WIDTH}}×{{GRID_HEIGHT}} cells operating in parallel.
-Each generation, every cell simultaneously decides its next state based on:
-- Its position on the grid
-- Its current state (0=dead/off, 1=alive/on)
-- The states of neighboring cells
-
-This is a synchronous update: all cells read the current state, then all cells update at once.
-
-== YOUR TASK ==
+== TASK ==
 {{TASK}}
 
-== INPUT FORMAT (provided each generation) ==
-You will receive a JSON object with:
-- "generation": Current time step (0, 1, 2, ...)
-- "state": Your current state (0 or 1)
-- "neighbors": Count of alive neighbors (0-8 for Moore neighborhood)
-- "neighborhood": Array of [dx, dy, state] for each neighbor
-  - dx, dy: relative offset from your position (e.g., [-1, -1] is top-left)
-  - state: that neighbor's current state (0 or 1)
+== INPUT (each generation) ==
+A JSON object with:
+- "generation": Current time step (0, 1, 2, ...).
+- "state": Your current state (0 or 1).
+- "neighbors": Count of alive neighbors.
+- "neighborhood": Array of [dx, dy, state] — offsets relative to you.
 
 == OUTPUT FORMAT ==
 {{OUTPUT_CONTRACT}}`;

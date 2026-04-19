@@ -2,7 +2,7 @@ import { error } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 
 // Keep DB connections open for the lifetime of the dev server process.
@@ -63,6 +63,14 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const { dbPath, op, sql = '', bind = [] } = body;
 	if (!dbPath) throw error(400, 'Missing dbPath');
+
+	// Handle 'exists' before opening the DB (which would create the file).
+	if (op === 'exists') {
+		const localPath = resolveLocalPath(dbPath);
+		return new Response(JSON.stringify({ exists: existsSync(localPath) }), {
+			headers: { 'Content-Type': 'application/json' }
+		});
+	}
 
 	const db = getDb(dbPath);
 	const decodedBind = bind.map(decodeValue);
