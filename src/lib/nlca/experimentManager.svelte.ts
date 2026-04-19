@@ -5,13 +5,13 @@
  */
 
 import {
-	NlcaTape,
-	ExperimentIndex,
 	pack01ToBitset,
 	encodeMetrics,
 	unpackBitsetTo01,
-	buildFrameLine
+	buildFrameLine,
+	type NlcaTape
 } from './tape.js';
+import * as persistence from './persistence.js';
 import { NlcaStepper } from './stepper.js';
 import type { BufferStatus } from './frameBuffer.js';
 import { CellAgentManager } from './agentManager.js';
@@ -19,7 +19,6 @@ import {
 	redactExperimentConfigForPersistence,
 	type ExperimentConfig,
 	type ExperimentStatus,
-	type ExperimentMeta,
 	type NlcaOrchestratorConfig,
 	type NlcaNeighborhood
 } from './types.js';
@@ -134,7 +133,6 @@ export class ExperimentManager {
 	sessionApiKey = $state('');
 	sessionSambaNovaApiKey = $state('');
 	private experimentCounter = 0;
-	private index: ExperimentIndex;
 	private computeAbortControllers = new Map<string, AbortController>();
 	/** Per-experiment generation counter used to void stale async rehydrates when
 	 * the user switches active experiments faster than disk reads complete. */
@@ -143,113 +141,6 @@ export class ExperimentManager {
 	 * detect they've been superseded and bail out cleanly. */
 	private playbackToken = 0;
 	private playbackCancelAnim: (() => void) | null = null;
-
-	constructor() {
-		this.index = new ExperimentIndex();
-	}
-
-	/** Append or merge a row into the local runs.csv. Fire-and-forget — any
-	 * failure is logged but never throws (the CSV is a convenience artefact;
-	 * the SQLite index remains the authoritative state store). */
-	private async syncCsvRow(exp: Experiment, extra?: { errorMessage?: string }): Promise<void> {
-		try {
-			await fetch('/api/nlca-runs-csv', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					id: exp.id,
-					label: exp.label,
-					apiProvider: exp.config.apiProvider ?? 'openrouter',
-					model: exp.config.model,
-					gridWidth: exp.config.gridWidth,
-					gridHeight: exp.config.gridHeight,
-					neighborhood: exp.config.neighborhood,
-					cellColorEnabled: exp.config.cellColorEnabled ? 'true' : 'false',
-					taskDescription: exp.config.taskDescription,
-					memoryWindow: exp.config.memoryWindow,
-					maxConcurrency: exp.config.maxConcurrency,
-					batchSize: exp.config.batchSize,
-					frameBatched: exp.config.frameBatched ? 'true' : 'false',
-					frameStreamed: exp.config.frameStreamed ? 'true' : 'false',
-					compressPayload: exp.config.compressPayload ? 'true' : 'false',
-					deduplicateRequests: exp.config.deduplicateRequests ? 'true' : 'false',
-					targetFrames: exp.config.targetFrames,
-					status: exp.status,
-					frameCount: exp.progress.current,
-					totalCost: String(exp.totalCost ?? 0),
-					createdAt: exp.createdAt,
-					updatedAt: Date.now(),
-					dbFilename: exp.dbFilename,
-					errorMessage: extra?.errorMessage ?? exp.errorMessage ?? ''
-				})
-			});
-		} catch (err) {
-			// Production build / no server → silently skip.
-			if (typeof window !== 'undefined') {
-				console.debug('[ExperimentManager] CSV sync skipped:', err);
-			}
-		}
-	}
-
-	private async deleteCsvRow(id: string): Promise<void> {
-		try {
-			await fetch(`/api/nlca-runs-csv?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-		} catch {
-			// ignore
-		}
-	}
-
-	/** Write the meta.json snapshot for an experiment. Fire-and-forget — the
-	 * JSONL tape is a convenience artefact; SQLite remains authoritative. */
-	private async syncJsonlMeta(exp: Experiment): Promise<void> {
-		try {
-			await fetch('/api/nlca-frames-jsonl', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					runId: exp.id,
-					meta: {
-						id: exp.id,
-						label: exp.label,
-						status: exp.status,
-						progress: exp.progress,
-						createdAt: exp.createdAt,
-						updatedAt: Date.now(),
-						dbFilename: exp.dbFilename,
-						errorMessage: exp.errorMessage ?? null,
-						config: redactExperimentConfigForPersistence(exp.config)
-					}
-				})
-			});
-		} catch (err) {
-			if (typeof window !== 'undefined') {
-				console.debug('[ExperimentManager] JSONL meta sync skipped:', err);
-			}
-		}
-	}
-
-	/** Append one pre-serialised frame line to the experiment's frames.jsonl. */
-	private async appendJsonlFrame(runId: string, frameLine: string): Promise<void> {
-		try {
-			await fetch('/api/nlca-frames-jsonl', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ runId, frame: frameLine })
-			});
-		} catch (err) {
-			if (typeof window !== 'undefined') {
-				console.debug('[ExperimentManager] JSONL frame sync skipped:', err);
-			}
-		}
-	}
-
-	private async deleteJsonlRun(id: string): Promise<void> {
-		try {
-			await fetch(`/api/nlca-frames-jsonl?runId=${encodeURIComponent(id)}`, { method: 'DELETE' });
-		} catch {
-			// ignore
-		}
-	}
 
 	/** Fetch live pricing for this experiment's model and project the full-run
 	 * cost at completion. Called when the experiment is created and whenever
@@ -272,143 +163,22 @@ export class ExperimentManager {
 		}
 	}
 
-	/** Fetch a frame from the disk-backed JSONL tape. Pass `generation` to
-	 * read a specific frame (used by scrub / prev / next), or omit to read
-	 * the latest (used by rehydrate-on-load). The browser's sqlite-wasm
-	 * handle is in-memory only in dev mode, so seeks that miss SQLite have
-	 * to go to disk here. */
-	private async fetchJsonlFrame(
-		id: string,
-		generation?: number
-	): Promise<{
-		generation: number;
-		width: number;
-		height: number;
-		grid01: number[];
-		colorsHex: Array<string | null> | null;
-		frameCount: number;
-	} | null> {
-		try {
-			const qs = new URLSearchParams({ runId: id });
-			if (generation !== undefined) qs.set('generation', String(generation));
-			const res = await fetch(`/api/nlca-frames-jsonl?${qs.toString()}`);
-			if (!res.ok) return null;
-			const data = await res.json();
-			const chosen = generation !== undefined ? data?.frame : data?.latest;
-			if (!chosen) return null;
-			return {
-				generation: chosen.generation,
-				width: chosen.width,
-				height: chosen.height,
-				grid01: chosen.grid01,
-				colorsHex: chosen.colorsHex,
-				frameCount: data.frameCount ?? 0
-			};
-		} catch {
-			return null;
-		}
-	}
-
 	get active(): Experiment | null {
 		if (!this.activeId) return null;
 		return this.experiments[this.activeId] ?? null;
 	}
 
-	/**
-	 * Attempt to load experiments from the local runs.csv first (dev-mode only).
-	 * Falls back silently to the SQLite index if CSV is unavailable — the CSV is
-	 * the user-visible artefact and this keeps the Runs panel populated even when
-	 * SQLite hasn't been migrated in a new checkout.
-	 */
-	private async loadFromCsvIfPresent(): Promise<Array<{ id: string }>> {
-		try {
-			const res = await fetch('/api/nlca-runs-csv');
-			if (!res.ok) return [];
-			const data = (await res.json()) as { rows?: Array<Record<string, string>> };
-			const rows = data?.rows ?? [];
-			for (const row of rows) {
-				if (!row.id || row.id in this.experiments) continue;
-				const config: ExperimentConfig = {
-					apiKey: '', // never persisted to CSV
-					sambaNovaApiKey: '',
-					apiProvider: (row.apiProvider as 'openrouter' | 'sambanova') || 'openrouter',
-					model: row.model || '',
-					temperature: 0,
-					maxOutputTokens: 64,
-					gridWidth: Number(row.gridWidth) || 10,
-					gridHeight: Number(row.gridHeight) || 10,
-					neighborhood: (row.neighborhood as ExperimentConfig['neighborhood']) || 'moore',
-					cellColorEnabled: row.cellColorEnabled === 'true',
-					taskDescription: row.taskDescription ?? '',
-					useAdvancedMode: false,
-					memoryWindow: Number(row.memoryWindow) || 0,
-					maxConcurrency: Number(row.maxConcurrency) || 50,
-					batchSize: Number(row.batchSize) || 200,
-					frameBatched: row.frameBatched === 'true',
-					frameStreamed: row.frameStreamed === 'true',
-					cellTimeoutMs: 30_000,
-					compressPayload: row.compressPayload === 'true',
-					deduplicateRequests: row.deduplicateRequests === 'true',
-					targetFrames: Number(row.targetFrames) || 50
-				};
-				const tape = new NlcaTape(row.dbFilename || `/${row.id}.sqlite3`);
-				// Don't init — defer to lazy init when the run is actually opened.
-				const statusRaw = (row.status as Experiment['status']) || 'paused';
-				const status: Experiment['status'] = statusRaw === 'running' ? 'paused' : statusRaw;
-				const createdAt = Number(row.createdAt) || Date.now();
-				const exp: Experiment = {
-					id: row.id,
-					label: row.label || row.id,
-					config,
-					status,
-					stepper: null,
-					tape,
-					frameBuffer: null,
-					agentManager: null,
-					progress: {
-						current: Number(row.frameCount) || 0,
-						target: config.targetFrames
-					},
-					createdAt,
-					dbFilename: row.dbFilename || '',
-					errorMessage: row.errorMessage || undefined,
-					currentGrid: null,
-					currentColorsHex: null,
-					currentColorStatus8: null,
-					currentGeneration: Number(row.frameCount) || 0,
-					bufferStatus: null,
-					totalCost: Number(row.totalCost) || 0,
-					estimatedCost: 0,
-					pricingUnknown: true,
-					totalCalls: 0,
-					lastLatencyMs: null
-				};
-				this.experiments[row.id] = exp;
-				this.experimentCounter++;
-				void this.refreshEstimatedCost(row.id);
-			}
-			return rows.map((r) => ({ id: r.id }));
-		} catch {
-			return [];
-		}
-	}
-
 	async loadFromIndex(): Promise<void> {
-		// Prefer CSV (authoritative for the Runs panel) — it's a single plain file
-		// the user can open in Excel/grep/Python and is the spec'd data source.
-		await this.loadFromCsvIfPresent();
-
-		await this.index.init();
-		const metas = await this.index.list();
+		const metas = await persistence.loadAllMeta();
 		for (const meta of metas) {
 			if (meta.id in this.experiments) continue;
-			const tape = new NlcaTape(meta.dbFilename);
-			await tape.init();
+			const tape = persistence.newTape(meta.dbFilename);
+			// Defer tape.init — lazy on first seek; saves ~30ms per experiment at boot.
 			const exp: Experiment = {
 				id: meta.id,
 				label: meta.label,
 				config: meta.config,
-				status: meta.status === 'running' ? 'paused' : meta.status,
+				status: meta.status,
 				stepper: null,
 				tape,
 				frameBuffer: null,
@@ -422,7 +192,7 @@ export class ExperimentManager {
 				currentColorStatus8: null,
 				currentGeneration: 0,
 				bufferStatus: null,
-				totalCost: meta.totalCost ?? 0,
+				totalCost: meta.totalCost,
 				estimatedCost: 0,
 				pricingUnknown: true,
 				totalCalls: 0,
@@ -430,6 +200,7 @@ export class ExperimentManager {
 			};
 			this.experiments[meta.id] = exp;
 			this.experimentCounter++;
+			void this.refreshEstimatedCost(meta.id);
 		}
 	}
 
@@ -439,7 +210,7 @@ export class ExperimentManager {
 		const label = generateLabel(config, this.experimentCounter);
 		const dbFilename = generateDbFilename(config);
 
-		const tape = new NlcaTape(dbFilename);
+		const tape = persistence.newTape(dbFilename);
 		await tape.init();
 
 		const exp: Experiment = {
@@ -470,18 +241,8 @@ export class ExperimentManager {
 		this.activeId = id;
 		void this.refreshEstimatedCost(id);
 
-		await this.index.init();
-		await this.index.register({
-			id,
-			label,
-			dbFilename,
-			config: redactExperimentConfigForPersistence(config),
-			status: 'paused',
-			createdAt: exp.createdAt,
-			updatedAt: exp.createdAt,
-			frameCount: 0
-		});
-		void this.syncCsvRow(exp);
+		await persistence.registerMeta(exp);
+		void persistence.syncMeta(exp);
 
 		if (autoStart) {
 			await this.startExperiment(id);
@@ -522,9 +283,7 @@ export class ExperimentManager {
 		exp.agentManager = agentManager;
 		exp.status = 'running';
 
-		await this.index.updateStatus(id, 'running');
-		void this.syncCsvRow(exp);
-		void this.syncJsonlMeta(exp);
+		void persistence.syncMeta(exp);
 
 		if (!exp.currentGrid) {
 			const totalCells = exp.config.gridWidth * exp.config.gridHeight;
@@ -587,7 +346,7 @@ export class ExperimentManager {
 						colorsHex: result.colorsHex ?? undefined
 					});
 
-					void this.appendJsonlFrame(
+					void persistence.syncFrame(
 						id,
 						buildFrameLine(
 							generation,
@@ -601,9 +360,7 @@ export class ExperimentManager {
 					);
 
 					if (generation % 5 === 0) {
-						await this.index.updateStatus(id, 'running', generation, undefined, exp.totalCost);
-						void this.syncCsvRow(exp);
-						void this.syncJsonlMeta(exp);
+						void persistence.syncMeta(exp);
 					}
 				} catch (err) {
 					if (controller.signal.aborted) break;
@@ -625,9 +382,7 @@ export class ExperimentManager {
 					if (isRateLimit) {
 						exp.status = 'paused';
 						exp.errorMessage = `Rate limit — paused. Resume when your provider quota resets. (${msg.slice(0, 160)})`;
-						await this.index.updateStatus(id, 'paused', exp.progress.current, exp.errorMessage, exp.totalCost);
-						void this.syncCsvRow(exp);
-						void this.syncJsonlMeta(exp);
+						void persistence.syncMeta(exp, { errorMessage: exp.errorMessage });
 						console.warn(
 							`[ExperimentManager] Experiment ${id} paused on rate limit:`,
 							msg.slice(0, 200)
@@ -637,9 +392,7 @@ export class ExperimentManager {
 
 					exp.status = 'error';
 					exp.errorMessage = msg.slice(0, 200);
-					await this.index.updateStatus(id, 'error', exp.progress.current, exp.errorMessage, exp.totalCost);
-					void this.syncCsvRow(exp);
-					void this.syncJsonlMeta(exp);
+					void persistence.syncMeta(exp, { errorMessage: exp.errorMessage });
 					console.error(`[ExperimentManager] Experiment ${id} error:`, err);
 					return;
 				}
@@ -647,9 +400,7 @@ export class ExperimentManager {
 
 			if (!controller.signal.aborted && exp.progress.current >= exp.progress.target) {
 				exp.status = 'completed';
-				await this.index.updateStatus(id, 'completed', exp.progress.current, undefined, exp.totalCost);
-				void this.syncCsvRow(exp);
-				void this.syncJsonlMeta(exp);
+				void persistence.syncMeta(exp);
 			}
 		};
 
@@ -686,10 +437,10 @@ export class ExperimentManager {
 		this.playback = { id, currentFrame: 0, totalFrames, isPaused: false };
 
 		// Pre-load all frames so playback doesn't stall on per-frame HTTP fetches.
-		const frames: Array<Awaited<ReturnType<typeof this.fetchJsonlFrame>>> = [];
+		const frames: Array<Awaited<ReturnType<typeof persistence.loadFrame>>> = [];
 		for (let gen = 1; gen <= totalFrames; gen++) {
 			if (this.playbackToken !== token) return;
-			frames.push(await this.fetchJsonlFrame(id, gen));
+			frames.push(await persistence.loadFrame(id, gen));
 		}
 		if (this.playbackToken !== token) return;
 
@@ -788,9 +539,7 @@ export class ExperimentManager {
 		}
 
 		exp.status = 'paused';
-		await this.index.updateStatus(id, 'paused', exp.progress.current, undefined, exp.totalCost);
-		void this.syncCsvRow(exp);
-		void this.syncJsonlMeta(exp);
+		void persistence.syncMeta(exp);
 	}
 
 	async resumeExperiment(id: string): Promise<void> {
@@ -807,8 +556,7 @@ export class ExperimentManager {
 			await this.startExperiment(id);
 		} else {
 			exp.status = 'running';
-			await this.index.updateStatus(id, 'running', exp.progress.current);
-			void this.syncJsonlMeta(exp);
+			void persistence.syncMeta(exp);
 			this.startComputeLoop(id);
 		}
 	}
@@ -837,7 +585,7 @@ export class ExperimentManager {
 		// -------------------------------------------------------------------
 		// 1. Restore current grid from the latest JSONL frame.
 		// -------------------------------------------------------------------
-		const latestFrame = await this.fetchJsonlFrame(id);
+		const latestFrame = await persistence.loadFrame(id);
 		if (!latestFrame) {
 			throw new Error(`Cannot extend experiment ${id}: no frames found on disk.`);
 		}
@@ -866,7 +614,7 @@ export class ExperimentManager {
 		if (memoryWindow > 0 && latestFrame.generation > 0) {
 			const firstGen = Math.max(1, latestFrame.generation - memoryWindow + 1);
 			for (let gen = firstGen; gen <= latestFrame.generation; gen++) {
-				const frame = await this.fetchJsonlFrame(id, gen);
+				const frame = await persistence.loadFrame(id, gen);
 				if (frame) {
 					const g = new Uint32Array(totalCells);
 					for (let i = 0; i < totalCells; i++) g[i] = frame.grid01[i] ?? 0;
@@ -901,21 +649,6 @@ export class ExperimentManager {
 		exp.config = { ...exp.config, targetFrames: newTarget };
 		exp.progress = { current: exp.progress.current, target: newTarget };
 
-		// register() uses INSERT OR REPLACE — the only path that updates config_json
-		// (which carries the new targetFrames value).
-		await this.index.init();
-		await this.index.register({
-			id: exp.id,
-			label: exp.label,
-			dbFilename: exp.dbFilename,
-			config: redactExperimentConfigForPersistence(exp.config),
-			status: 'running',
-			createdAt: exp.createdAt,
-			updatedAt: Date.now(),
-			frameCount: exp.progress.current,
-			totalCost: exp.totalCost
-		});
-
 		// -------------------------------------------------------------------
 		// 5. Attach stepper, mark running, sync persistence.
 		// -------------------------------------------------------------------
@@ -924,8 +657,10 @@ export class ExperimentManager {
 		exp.status = 'running';
 		exp.errorMessage = undefined;
 
-		void this.syncCsvRow(exp);
-		void this.syncJsonlMeta(exp);
+		// register() uses INSERT OR REPLACE — the only path that updates config_json
+		// (which carries the new targetFrames value).
+		await persistence.registerMeta(exp);
+		void persistence.syncMeta(exp);
 		void this.refreshEstimatedCost(id);
 
 		this.startComputeLoop(id);
@@ -939,9 +674,7 @@ export class ExperimentManager {
 		}
 
 		delete this.experiments[id];
-		await this.index.delete(id);
-		void this.deleteCsvRow(id);
-		void this.deleteJsonlRun(id);
+		void persistence.deleteExperiment(id);
 
 		if (this.activeId === id) {
 			const remaining = Object.keys(this.experiments);
@@ -997,7 +730,7 @@ export class ExperimentManager {
 			}
 
 			// SQLite has no rows for this run — fall back to the on-disk JSONL tape.
-			const jsonl = await this.fetchJsonlFrame(id);
+			const jsonl = await persistence.loadFrame(id);
 			if (this.rehydrateToken.get(id) !== token) return;
 			if (jsonl) {
 				const totalCells = jsonl.width * jsonl.height;
@@ -1060,7 +793,7 @@ export class ExperimentManager {
 
 		// SQLite miss — in-memory browser DB doesn't carry old frames across
 		// reloads. Try the on-disk JSONL tape.
-		const jsonl = await this.fetchJsonlFrame(id, generation);
+		const jsonl = await persistence.loadFrame(id, generation);
 		if (!jsonl) {
 			console.warn(
 				`[ExperimentManager] Frame ${generation} not found for experiment ${id} in either SQLite or JSONL.`
