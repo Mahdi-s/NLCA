@@ -9,7 +9,10 @@ type DecideFrameCell = {
 	x: number;
 	y: number;
 	self: CellState01;
-	neighborhood: Array<[number, number, CellState01]>;
+	/** [dx, dy, state] or [dx, dy, state, prevColor] when color mode is on */
+	neighborhood: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>;
+	/** Previous frame color of this cell (#RRGGBB), null = first generation */
+	prevColor?: string | null;
 	history?: CellState01[];
 };
 
@@ -174,7 +177,7 @@ function buildSystemPrompt(
 	provider: ApiProvider
 ): string {
 	const wantColor = cfg.cellColorHexEnabled === true;
-	const compressed = cfg.compressPayload === true;
+	const compressed = cfg.compressPayload === true && !wantColor;
 
 	if (provider === 'sambanova') {
 		const schemaLine = wantColor
@@ -196,6 +199,17 @@ function buildSystemPrompt(
 		? 'Cell format: [id,x,y,self,aliveCount,neighborStates]. neighborStates is array of 0/1 in reading order (top-left to bottom-right).'
 		: '';
 
+	const colorLine = wantColor
+		? [
+				'Color mode is enabled.',
+				'Each cell\'s "prevColor" field contains its previous frame hex color (null on the first generation).',
+				'Each neighbor entry has a 4th element: the neighbor\'s previous color (null if unknown or first generation).',
+				'Prefer color continuity: only change a cell\'s color if it clearly improves coherence with its neighbors.',
+				'When prevColor is non-null, keep it unless a noticeably better color is obvious from context.',
+				'Output a deterministic uppercase hex "#RRGGBB" per cell.'
+			].join('\n')
+		: '';
+
 	const hasAdvancedTemplate = cfg.useAdvancedMode === true && typeof cfg.advancedTemplate === 'string' && cfg.advancedTemplate.trim().length > 0;
 	if (hasAdvancedTemplate) {
 		const outputContract = buildFrameOutputContract(wantColor);
@@ -208,10 +222,11 @@ function buildSystemPrompt(
 			'You are computing the next generation of a cellular automaton.',
 			'All cells update synchronously: read the provided prev state + neighbors, then output next state for every cell.',
 			'Follow the TASK exactly.',
+			'Prefer state continuity: only change a cell\'s state if doing so clearly improves the overall image.',
 			'Apply the following per-cell system prompt template to each cell entry.',
 			'In that template, interpret variables x and y as the cell coordinates from the input payload.',
 			formatLine,
-			wantColor ? 'Color mode is enabled: include a deterministic uppercase hex "#RRGGBB" per cell.' : '',
+			colorLine,
 			'',
 			rendered,
 			'Return ONLY valid JSON matching the provided schema.',
@@ -225,8 +240,9 @@ function buildSystemPrompt(
 		'You are computing the next generation of a cellular automaton.',
 		'All cells update synchronously: read the provided prev state + neighbors, then output next state for every cell.',
 		'Follow the TASK exactly.',
+		'Prefer state continuity: only change a cell\'s state if doing so clearly improves the overall image.',
 		formatLine,
-		wantColor ? 'Color mode is enabled: include a deterministic uppercase hex "#RRGGBB" per cell.' : '',
+		colorLine,
 		'Return ONLY valid JSON matching the provided schema.',
 		'Do not include any explanation.'
 	]
@@ -236,7 +252,7 @@ function buildSystemPrompt(
 
 function buildUserPayload(req: DecideFrameRequest) {
 	const wantColor = req.promptConfig?.cellColorHexEnabled === true;
-	const compressed = req.promptConfig?.compressPayload === true;
+	const compressed = req.promptConfig?.compressPayload === true && !wantColor;
 	const provider: ApiProvider = req.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
 
 	if (provider === 'sambanova') {
@@ -298,6 +314,7 @@ function buildUserPayload(req: DecideFrameRequest) {
 				x: c.x,
 				y: c.y,
 				self: c.self,
+				...(wantColor ? { prevColor: c.prevColor ?? null } : {}),
 				aliveNeighbors,
 				neighborhood: c.neighborhood,
 				history: Array.isArray(c.history) ? c.history : undefined
