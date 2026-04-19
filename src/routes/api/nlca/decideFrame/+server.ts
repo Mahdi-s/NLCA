@@ -135,7 +135,7 @@ function buildSystemPrompt(
 	provider: ApiProvider
 ): string {
 	const wantColor = cfg.cellColorHexEnabled === true;
-	const compressed = cfg.compressPayload === true;
+	const compressed = cfg.compressPayload === true && !wantColor;
 
 	// SambaNova Hyperscale: rigid zero-thinking directive. Bypass conversational
 	// templates entirely. We now use json_object mode (not json_schema) because
@@ -282,7 +282,7 @@ function buildUserPayload(req: DecideFrameRequest) {
 				x: c.x,
 				y: c.y,
 				self: c.self,
-				...(wantColor && c.prevColor !== undefined ? { prevColor: c.prevColor } : {}),
+				...(wantColor ? { prevColor: c.prevColor ?? null } : {}),
 				aliveNeighbors,
 				neighborhood: c.neighborhood,
 				history: Array.isArray(c.history) ? c.history : undefined
