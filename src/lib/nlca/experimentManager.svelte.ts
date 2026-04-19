@@ -796,6 +796,12 @@ export class ExperimentManager {
 		const exp = this.experiments[id];
 		if (!exp || exp.status !== 'paused') return;
 
+		// API keys are never persisted — inject session keys if blank.
+		if (!exp.config.apiKey && this.sessionApiKey)
+			exp.config = { ...exp.config, apiKey: this.sessionApiKey };
+		if (!exp.config.sambaNovaApiKey && this.sessionSambaNovaApiKey)
+			exp.config = { ...exp.config, sambaNovaApiKey: this.sessionSambaNovaApiKey };
+
 		if (!exp.stepper) {
 			await this.startExperiment(id);
 		} else {
