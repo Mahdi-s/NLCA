@@ -194,11 +194,6 @@ function buildSystemPrompt(
 		].join('\n');
 	}
 
-	// Compressed format explanation
-	const formatLine = compressed
-		? 'Cell format: [id,x,y,self,aliveCount,neighborStates]. neighborStates is array of 0/1 in reading order (top-left to bottom-right).'
-		: '';
-
 	const colorLine = wantColor
 		? [
 				'Color mode is enabled.',
@@ -208,6 +203,11 @@ function buildSystemPrompt(
 				'When prevColor is non-null, keep it unless a noticeably better color is obvious from context.',
 				'Output a deterministic uppercase hex "#RRGGBB" per cell.'
 			].join('\n')
+		: '';
+
+	// Compressed format explanation
+	const formatLine = compressed
+		? 'Cell format: [id,x,y,self,aliveCount,neighborStates]. neighborStates is array of 0/1 in reading order (top-left to bottom-right).'
 		: '';
 
 	const hasAdvancedTemplate = cfg.useAdvancedMode === true && typeof cfg.advancedTemplate === 'string' && cfg.advancedTemplate.trim().length > 0;
@@ -252,6 +252,8 @@ function buildSystemPrompt(
 
 function buildUserPayload(req: DecideFrameRequest) {
 	const wantColor = req.promptConfig?.cellColorHexEnabled === true;
+	// Force verbose format when color mode is on: neighbor tuples carry prevColor as 4th element,
+	// which requires the dx/dy/state/color structure that the compressed format drops.
 	const compressed = req.promptConfig?.compressPayload === true && !wantColor;
 	const provider: ApiProvider = req.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
 
