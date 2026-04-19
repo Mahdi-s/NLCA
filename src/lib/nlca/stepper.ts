@@ -94,6 +94,38 @@ export class NlcaStepper {
 		console.log(`[NLCA] Agent sessions reset - new prompt will take effect`);
 	}
 
+	/**
+	 * Warm up frameHistory and prevColorsHex from externally loaded frames so
+	 * an extended run has the same memory context as if it had run continuously.
+	 *
+	 * @param frames     Chronological grid snapshots (oldest first), each a flat
+	 *                   Uint32Array of length (width * height).
+	 * @param prevColors Color array from the last frame — seeds prevColorsHex so
+	 *                   cells receive prevColor context on the first extended step.
+	 */
+	seedPreviousFrames(frames: Uint32Array[], prevColors?: Array<string | null> | null): void {
+		const memoryWindow = Math.max(0, Math.floor(this.cfg.orchestrator.memoryWindow ?? 0));
+
+		if (frames.length > 0) {
+			const totalCells = frames[0]!.length;
+			// (Re)initialize to the correct size — mirrors the inline init in decideFrameBatched.
+			this.frameHistory = Array.from({ length: totalCells }, () => [] as CellState01[]);
+
+			if (memoryWindow > 0) {
+				for (const grid of frames.slice(-memoryWindow)) {
+					for (let i = 0; i < totalCells; i++) {
+						const state: CellState01 = (grid[i] ?? 0) === 0 ? 0 : 1;
+						this.frameHistory[i]!.push(state);
+					}
+				}
+			}
+		}
+
+		if (prevColors != null) {
+			this.prevColorsHex = prevColors;
+		}
+	}
+
 	/** Get cost statistics from orchestrator */
 	getCostStats(): NlcaCostStats {
 		return this.orchestrator.getCostStats();

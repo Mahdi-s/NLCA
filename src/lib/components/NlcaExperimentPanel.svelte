@@ -11,6 +11,8 @@
 	let { manager, open, onclose, onNew }: Props = $props();
 
 	let confirmDeleteId = $state<string | null>(null);
+	let extendId = $state<string | null>(null);
+	let extendFrames = $state(10);
 
 	function statusIcon(status: Experiment['status']): string {
 		switch (status) {
@@ -102,6 +104,29 @@
 						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.pauseExperiment(exp.id); }}>Pause</button>
 					{:else if exp.status === 'paused'}
 						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.resumeExperiment(exp.id); }}>Resume</button>
+					{:else if exp.status === 'completed' || exp.status === 'error'}
+						{#if extendId === exp.id}
+							<input
+								class="extend-input"
+								type="number"
+								min="1"
+								max="500"
+								bind:value={extendFrames}
+								onclick={(e) => e.stopPropagation()}
+							/>
+							<button class="exp-action-btn accent" onclick={(e) => {
+								e.stopPropagation();
+								void manager.extendExperiment(exp.id, extendFrames);
+								extendId = null;
+							}}>Go</button>
+							<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); extendId = null; }}>✕</button>
+						{:else}
+							<button class="exp-action-btn" onclick={(e) => {
+								e.stopPropagation();
+								extendId = exp.id;
+								extendFrames = exp.config.targetFrames;
+							}}>Extend</button>
+						{/if}
 					{/if}
 					{#if confirmDeleteId === exp.id}
 						<button class="exp-action-btn danger" onclick={(e) => { e.stopPropagation(); manager.deleteExperiment(exp.id); confirmDeleteId = null; }}>Confirm</button>
@@ -341,6 +366,27 @@
 
 	.exp-action-btn.danger:hover {
 		background: rgba(239, 68, 68, 0.15);
+	}
+
+	.extend-input {
+		width: 52px;
+		background: rgba(255, 255, 255, 0.07);
+		border: 1px solid var(--ui-border, rgba(255, 255, 255, 0.08));
+		border-radius: 4px;
+		color: var(--ui-text-hover, #fff);
+		font-size: 10px;
+		padding: 3px 5px;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.exp-action-btn.accent {
+		color: var(--ui-accent, #2dd4bf);
+		border-color: rgba(45, 212, 191, 0.3);
+	}
+
+	.exp-action-btn.accent:hover {
+		background: rgba(45, 212, 191, 0.1);
+		color: var(--ui-accent, #2dd4bf);
 	}
 
 	.empty-state {

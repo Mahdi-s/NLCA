@@ -801,6 +801,117 @@ export class ExperimentManager {
 		}
 	}
 
+	/**
+	 * Extend a completed, error, or stepper-less paused experiment by
+	 * `additionalFrames` more frames.
+	 *
+	 * Restores grid state and memory context from the JSONL tape, then resumes
+	 * the compute loop. Does NOT call tape.startRun() — existing frame rows are
+	 * preserved and the loop continues from progress.current + 1.
+	 */
+	async extendExperiment(id: string, additionalFrames: number): Promise<void> {
+		const exp = this.experiments[id];
+		if (!exp) throw new Error(`Experiment ${id} not found`);
+
+		if (exp.status === 'running') return;
+
+		// Delegate to resumeExperiment for a paused experiment that still has a
+		// live in-memory stepper (in-session pause, browser not reloaded).
+		if (exp.status === 'paused' && exp.stepper !== null) {
+			await this.resumeExperiment(id);
+			return;
+		}
+
+		// -------------------------------------------------------------------
+		// 1. Restore current grid from the latest JSONL frame.
+		// -------------------------------------------------------------------
+		const latestFrame = await this.fetchJsonlFrame(id);
+		if (!latestFrame) {
+			throw new Error(`Cannot extend experiment ${id}: no frames found on disk.`);
+		}
+
+		const totalCells = latestFrame.width * latestFrame.height;
+		const restoredGrid = new Uint32Array(totalCells);
+		for (let i = 0; i < totalCells; i++) restoredGrid[i] = latestFrame.grid01[i] ?? 0;
+
+		exp.currentGrid = restoredGrid;
+		exp.currentColorsHex = latestFrame.colorsHex;
+		exp.currentGeneration = latestFrame.generation;
+		exp.progress = { current: latestFrame.generation, target: exp.progress.target };
+		if (latestFrame.colorsHex) {
+			const cs = new Uint8Array(totalCells);
+			for (let i = 0; i < totalCells; i++) cs[i] = latestFrame.colorsHex[i] != null ? 1 : 0;
+			exp.currentColorStatus8 = cs;
+		} else {
+			exp.currentColorStatus8 = null;
+		}
+
+		// -------------------------------------------------------------------
+		// 2. Fetch seed frames for memory context (last memoryWindow frames).
+		// -------------------------------------------------------------------
+		const memoryWindow = Math.max(0, Math.floor(exp.config.memoryWindow ?? 0));
+		const seedGrids: Uint32Array[] = [];
+		if (memoryWindow > 0 && latestFrame.generation > 0) {
+			const firstGen = Math.max(1, latestFrame.generation - memoryWindow + 1);
+			for (let gen = firstGen; gen <= latestFrame.generation; gen++) {
+				const frame = await this.fetchJsonlFrame(id, gen);
+				if (frame) {
+					const g = new Uint32Array(totalCells);
+					for (let i = 0; i < totalCells; i++) g[i] = frame.grid01[i] ?? 0;
+					seedGrids.push(g);
+				}
+			}
+		}
+
+		// -------------------------------------------------------------------
+		// 3. Fresh stepper — tape.startRun() is intentionally skipped so
+		//    existing nlca_frames rows are preserved.
+		// -------------------------------------------------------------------
+		const orchestratorConfig = buildOrchestratorConfig(exp.config);
+		const agentManager = new CellAgentManager(exp.config.gridWidth, exp.config.gridHeight);
+		const stepper = new NlcaStepper(
+			{ runId: id, neighborhood: exp.config.neighborhood, boundary: 'torus', orchestrator: orchestratorConfig },
+			agentManager
+		);
+		stepper.seedPreviousFrames(seedGrids, latestFrame.colorsHex ?? null);
+
+		// -------------------------------------------------------------------
+		// 4. Bump progress target and persist updated config.
+		// -------------------------------------------------------------------
+		const newTarget = exp.progress.current + Math.max(1, Math.floor(additionalFrames));
+		exp.config = { ...exp.config, targetFrames: newTarget };
+		exp.progress = { current: exp.progress.current, target: newTarget };
+
+		// register() uses INSERT OR REPLACE — the only path that updates config_json
+		// (which carries the new targetFrames value).
+		await this.index.init();
+		await this.index.register({
+			id: exp.id,
+			label: exp.label,
+			dbFilename: exp.dbFilename,
+			config: redactExperimentConfigForPersistence(exp.config),
+			status: 'running',
+			createdAt: exp.createdAt,
+			updatedAt: Date.now(),
+			frameCount: exp.progress.current,
+			totalCost: exp.totalCost
+		});
+
+		// -------------------------------------------------------------------
+		// 5. Attach stepper, mark running, sync persistence.
+		// -------------------------------------------------------------------
+		exp.stepper = stepper;
+		exp.agentManager = agentManager;
+		exp.status = 'running';
+		exp.errorMessage = undefined;
+
+		void this.syncCsvRow(exp);
+		void this.syncJsonlMeta(exp);
+		void this.refreshEstimatedCost(id);
+
+		this.startComputeLoop(id);
+	}
+
 	async deleteExperiment(id: string): Promise<void> {
 		const controller = this.computeAbortControllers.get(id);
 		if (controller) {
