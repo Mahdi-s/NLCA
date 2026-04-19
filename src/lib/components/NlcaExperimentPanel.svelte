@@ -14,6 +14,14 @@
 	let extendId = $state<string | null>(null);
 	let extendFrames = $state(10);
 
+	// Reset transient UI state whenever the active experiment changes so stale
+	// extend inputs / delete confirms don't bleed across cards.
+	$effect(() => {
+		void manager.activeId;
+		confirmDeleteId = null;
+		extendId = null;
+	});
+
 	function statusIcon(status: Experiment['status']): string {
 		switch (status) {
 			case 'running': return '●';

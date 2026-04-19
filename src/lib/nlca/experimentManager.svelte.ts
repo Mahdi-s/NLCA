@@ -944,14 +944,19 @@ export class ExperimentManager {
 
 	setActive(id: string): void {
 		if (!(id in this.experiments)) return;
+		// Stop any in-progress playback when switching experiments so the canvas
+		// $effect isn't blocked and the new experiment renders immediately.
+		if (this.playback && this.playback.id !== id) this.stopPlayback();
 		this.activeId = id;
 		const exp = this.experiments[id];
 		if (!exp) return;
-		// Running experiments have fresh in-memory state from the compute loop —
-		// skip rehydrate so we don't race the loop. For any other status, refresh
-		// from disk in case a prior session or sibling tab advanced the tape.
+		// Running experiments have fresh in-memory state from the compute loop.
 		if (exp.status === 'running') return;
 		if (exp.progress.current <= 0) return;
+		// Grid already loaded in this session — switching is instant; skip re-fetch
+		// to avoid the blank-canvas flicker caused by clearing currentGrid before
+		// the async JSONL reload completes.
+		if (exp.currentGrid !== null) return;
 		const token = (this.rehydrateToken.get(id) ?? 0) + 1;
 		this.rehydrateToken.set(id, token);
 		void this.rehydrateFromTape(id, token).catch((err) => {
@@ -1009,10 +1014,13 @@ export class ExperimentManager {
 			}
 
 			console.warn(`[ExperimentManager] No frame data on disk for experiment ${id}.`);
-			exp.noTapeData = true;
-			exp.currentGrid = null;
-			exp.currentColorsHex = null;
-			exp.currentColorStatus8 = null;
+			// Only blank the canvas if we never loaded anything — don't evict a
+			// previously-loaded frame just because the JSONL fetch returned empty.
+			if (exp.currentGrid === null) {
+				exp.noTapeData = true;
+				exp.currentColorsHex = null;
+				exp.currentColorStatus8 = null;
+			}
 		} catch (err) {
 			console.warn(`[ExperimentManager] Could not read tape for ${id}:`, err);
 		}
