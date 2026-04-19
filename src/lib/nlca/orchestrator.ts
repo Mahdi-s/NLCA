@@ -234,25 +234,31 @@ export function calculateOptimalChunkSize(
 export function hashCellContext(
 	self: CellState01,
 	neighbors: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>,
-	history?: CellState01[]
+	history?: CellState01[],
+	prevColor?: string | null
 ): string {
-	// Sort neighbors by offset to ensure consistent ordering
 	const sortedNeighbors = [...neighbors].sort((a, b) => {
 		if (a[0] !== b[0]) return a[0] - b[0];
 		return a[1] - b[1];
 	});
-	
-	// Build hash string: self + neighbor states + history
+
 	const parts: string[] = [
 		String(self),
-		sortedNeighbors.map(n => String(n[2])).join('')
+		sortedNeighbors.map(n => {
+			const color = n[3];
+			return color !== undefined ? `${n[2]}:${color ?? ''}` : String(n[2]);
+		}).join(',')
 	];
-	
+
 	if (history && history.length > 0) {
 		parts.push(history.join(''));
 	}
-	
-	return parts.join(':');
+
+	if (prevColor !== undefined) {
+		parts.push(prevColor ?? '');
+	}
+
+	return parts.join('|');
 }
 
 /** Cached decision result for deduplication */
@@ -698,7 +704,7 @@ export class NlcaOrchestrator {
 		
 		if (this.cfg.deduplicateRequests) {
 			for (const cell of args.cells) {
-				const hash = hashCellContext(cell.self, cell.neighbors, cell.history);
+				const hash = hashCellContext(cell.self, cell.neighbors, cell.history, cell.prevColor);
 				cellHashes.set(cell.cellId, hash);
 				
 				const cached = this.getDedupedDecision(hash);
@@ -756,6 +762,7 @@ export class NlcaOrchestrator {
 						x: c.x,
 						y: c.y,
 						self: c.self,
+						prevColor: c.prevColor,
 						neighborhood: c.neighbors,
 						history: c.history
 					})),
