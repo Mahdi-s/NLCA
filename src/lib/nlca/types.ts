@@ -182,3 +182,12 @@ export interface ExperimentMeta {
 	frameCount: number;
 	errorMessage?: string;
 }
+
+/** Strip credentials before persisting config (SQLite index, meta.json, nlca_runs). */
+export function redactExperimentConfigForPersistence(config: ExperimentConfig): ExperimentConfig {
+	return {
+		...config,
+		apiKey: '',
+		sambaNovaApiKey: ''
+	};
+}

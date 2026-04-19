@@ -1,5 +1,11 @@
 import { dev } from '$app/environment';
-import type { NlcaCellMetricsFrame, NlcaRunConfig, ExperimentMeta, ExperimentConfig } from './types.js';
+import {
+	redactExperimentConfigForPersistence,
+	type NlcaCellMetricsFrame,
+	type NlcaRunConfig,
+	type ExperimentMeta,
+	type ExperimentConfig
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // DbHandle abstraction — synchronous sqlite-wasm vs. HTTP-proxied server DB
@@ -429,7 +435,7 @@ export class ExperimentIndex {
 				meta.id,
 				meta.label,
 				meta.dbFilename,
-				JSON.stringify(meta.config),
+				JSON.stringify(redactExperimentConfigForPersistence(meta.config)),
 				meta.status,
 				meta.createdAt,
 				meta.updatedAt,

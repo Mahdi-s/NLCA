@@ -15,12 +15,13 @@ import {
 import { NlcaStepper } from './stepper.js';
 import type { BufferStatus } from './frameBuffer.js';
 import { CellAgentManager } from './agentManager.js';
-import type {
-	ExperimentConfig,
-	ExperimentStatus,
-	ExperimentMeta,
-	NlcaOrchestratorConfig,
-	NlcaNeighborhood
+import {
+	redactExperimentConfigForPersistence,
+	type ExperimentConfig,
+	type ExperimentStatus,
+	type ExperimentMeta,
+	type NlcaOrchestratorConfig,
+	type NlcaNeighborhood
 } from './types.js';
 import type { PromptConfig } from './prompt.js';
 import { estimateExperimentCost, getModelPricing } from './costEstimator.js';
@@ -210,7 +211,7 @@ export class ExperimentManager {
 						updatedAt: Date.now(),
 						dbFilename: exp.dbFilename,
 						errorMessage: exp.errorMessage ?? null,
-						config: exp.config
+						config: redactExperimentConfigForPersistence(exp.config)
 					}
 				})
 			});
@@ -468,7 +469,7 @@ export class ExperimentManager {
 			id,
 			label,
 			dbFilename,
-			config,
+			config: redactExperimentConfigForPersistence(config),
 			status: 'paused',
 			createdAt: exp.createdAt,
 			updatedAt: exp.createdAt,
@@ -508,7 +509,7 @@ export class ExperimentManager {
 			neighborhood: exp.config.neighborhood,
 			model: exp.config.model,
 			maxConcurrency: exp.config.maxConcurrency,
-			configJson: JSON.stringify(exp.config)
+			configJson: JSON.stringify(redactExperimentConfigForPersistence(exp.config))
 		});
 
 		exp.stepper = stepper;

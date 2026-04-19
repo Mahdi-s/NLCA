@@ -1,0 +1,9 @@
+# NLCA experiment and prompt logs — Git LFS so clones stay small until `git lfs pull`.
+# Install hooks once per machine: `git lfs install`
+
+experiments/**/*.csv filter=lfs diff=lfs merge=lfs -text
+experiments/**/*.json filter=lfs diff=lfs merge=lfs -text
+experiments/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
+experiments/**/*.sqlite3 filter=lfs diff=lfs merge=lfs -text
+
+logs/**/*.json filter=lfs diff=lfs merge=lfs -text

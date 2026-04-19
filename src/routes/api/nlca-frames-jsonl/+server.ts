@@ -2,6 +2,7 @@ import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { redactExperimentConfigForPersistence, type ExperimentConfig } from '$lib/nlca/types.js';
 
 /**
  * Dev-only, file-system-backed JSONL tape.
@@ -147,7 +148,11 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	if (body.meta !== undefined) {
 		const metaPath = join(dir, 'meta.json');
-		writeFileSync(metaPath, JSON.stringify(body.meta, null, 2), 'utf8');
+		const meta = body.meta as Record<string, unknown>;
+		if (meta.config && typeof meta.config === 'object') {
+			meta.config = redactExperimentConfigForPersistence(meta.config as ExperimentConfig);
+		}
+		writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
 	}
 
 	if (body.frame !== undefined) {

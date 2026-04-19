@@ -6,37 +6,39 @@ node_modules
 .netlify
 .wrangler
 /.svelte-kit
+.svelte-kit/
 /build
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Env
+# Env & secrets (never commit credentials)
 .env
 .env.*
 !.env.example
 !.env.test
+.envrc
+.direnv/
+*.pem
 
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Local dev experiment databases
-/experiments/*
-!/experiments/.gitkeep
-
-# Local dev prompt logs
-/logs/*
-!/logs/.gitkeep
+# SQLite write-ahead sidecars (not meant for version control; commit *.sqlite3 only)
+**/*.sqlite3-wal
+**/*.sqlite3-shm
 
 # Local git worktrees (used for branch comparisons)
 .worktrees/
 
-# Claude Code — local/session state (do not commit)
-.claude/
+# Editor / AI tooling (machine-local; keep out of GitHub)
+.cursor/
+.vscode/
+.idea/
+*.code-workspace
 
-# Cursor — version shared rules and checked-in MCP config only
-.cursor/*
-!.cursor/rules/
-!.cursor/mcp.json
+# Claude Code — local/session state
+.claude/
+.Claude/
