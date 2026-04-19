@@ -124,6 +124,7 @@ describe('persistence.syncMeta', () => {
 
         await persistence.syncMeta(exp);
 
+        // Fire-and-forget, but the function should attempt both endpoints
         const urls = fetchMock.mock.calls.map((call: FetchArgs) => String(call[0]));
         expect(urls.some((u: string) => u.includes('/api/nlca-runs-csv'))).toBe(true);
         expect(urls.some((u: string) => u.includes('/api/nlca-frames-jsonl'))).toBe(true);
