@@ -719,6 +719,11 @@ export class ExperimentManager {
 				if (hold > 8) await new Promise((r) => setTimeout(r, hold));
 			}
 
+			// 3-second viewing pause so each frame can be evaluated before the next.
+			if (gen < totalFrames && this.playbackToken === token && this.playback && !this.playback.isPaused) {
+				await new Promise((r) => setTimeout(r, 3000));
+			}
+
 			if (this.playbackToken !== token || !this.playback) return;
 
 			// Snap the experiment state to the just-animated frame so the scrubber

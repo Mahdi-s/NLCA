@@ -1112,16 +1112,19 @@
 			simAccMs += frameDt;
 
 			if (nlcaMode) {
-				// NLCA mode: buffered playback (batch runs) or direct stepping
+				// NLCA mode: buffered playback (batch runs) or direct stepping.
+				// Enforce a 3-second minimum between frames so each result is
+				// visible long enough to evaluate.
+				const nlcaStepMs = Math.max(stepMs, 3000);
 				const bufferActive =
 					!!nlcaFrameBuffer &&
 					(nlcaFrameBuffer.getBufferedCount() > 0 || nlcaBufferStatus?.isComputing || nlcaBatchRunTarget > 0);
 
 				if (bufferActive) {
-					if (simAccMs >= stepMs) {
-						simAccMs = Math.min(simAccMs, stepMs);
-						simAccMs -= stepMs;
-						
+					if (simAccMs >= nlcaStepMs) {
+						simAccMs = Math.min(simAccMs, nlcaStepMs);
+						simAccMs -= nlcaStepMs;
+
 						const bufferedCount = nlcaFrameBuffer?.getBufferedCount() ?? 0;
 						// Wait for min buffer (or any frames at all, if none exist yet).
 						if (bufferedCount === 0) {
@@ -1133,10 +1136,10 @@
 							consumeBufferedFrame();
 						}
 					}
-				} else if (!nlcaStepInFlight && simAccMs >= stepMs) {
+				} else if (!nlcaStepInFlight && simAccMs >= nlcaStepMs) {
 					// Legacy single-step mode (no buffer)
-					simAccMs = Math.min(simAccMs, stepMs);
-					simAccMs -= stepMs;
+					simAccMs = Math.min(simAccMs, nlcaStepMs);
+					simAccMs -= nlcaStepMs;
 					startNlcaStep();
 				}
 			} else {
