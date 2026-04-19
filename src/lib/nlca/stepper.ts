@@ -744,6 +744,8 @@ export class NlcaStepper {
 		// Store colors for next frame so cells get prevColor context
 		if (wantColor) {
 			this.prevColorsHex = colorsHex ?? null;
+		} else {
+			this.prevColorsHex = null;
 		}
 
 		const next = new Uint32Array(expected);
