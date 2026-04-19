@@ -136,7 +136,8 @@ export function extractCellContext(
 	x: number,
 	y: number,
 	neighborhood: NlcaNeighborhood,
-	boundary: BoundaryMode
+	boundary: BoundaryMode,
+	prevColors?: Array<string | null>
 ): CellContext {
 	const id = x + y * width;
 	const self = getCell01(prev, x, y, width, height, boundary);
@@ -144,14 +145,23 @@ export function extractCellContext(
 
 	const neighbors: NeighborSample[] = [];
 	for (const [dx, dy] of offsets) {
-		neighbors.push({
+		const sample: NeighborSample = {
 			dx,
 			dy,
 			state: getCell01(prev, x + dx, y + dy, width, height, boundary)
-		});
+		};
+		if (prevColors !== undefined) {
+			const t = transformCoordinate(x + dx, y + dy, width, height, boundary);
+			sample.prevColor = t ? (prevColors[t.x + t.y * width] ?? null) : null;
+		}
+		neighbors.push(sample);
 	}
 
-	return { id, x, y, self, neighbors };
+	const ctx: CellContext = { id, x, y, self, neighbors };
+	if (prevColors !== undefined) {
+		ctx.prevColor = prevColors[id] ?? null;
+	}
+	return ctx;
 }
 
 

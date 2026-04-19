@@ -13,6 +13,8 @@ export interface NeighborSample {
 	dy: number;
 	/** Neighbor state from previous frame (0/1) */
 	state: CellState01;
+	/** Previous frame color of this neighbor (#RRGGBB), null=first gen, undefined=color mode off */
+	prevColor?: string | null;
 }
 
 export interface CellContext {
@@ -22,6 +24,8 @@ export interface CellContext {
 	y: number;
 	self: CellState01;
 	neighbors: NeighborSample[];
+	/** Previous frame color of this cell (#RRGGBB), null=first gen, undefined=color mode off */
+	prevColor?: string | null;
 }
 
 /** Single-cell request for individual agent calls */
