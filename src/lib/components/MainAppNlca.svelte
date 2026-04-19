@@ -56,6 +56,13 @@
 		experimentManager.loadFromIndex();
 	});
 
+	// Keep session API keys on the manager in sync with current settings so
+	// extendExperiment can use them when loaded experiments have blank keys.
+	$effect(() => {
+		experimentManager.sessionApiKey = nlcaSettings.apiKey;
+		experimentManager.sessionSambaNovaApiKey = nlcaSettings.sambaNovaApiKey;
+	});
+
 	let canvas: Canvas;
 
 	// Push active experiment's grid to Canvas whenever it changes. Also clear the

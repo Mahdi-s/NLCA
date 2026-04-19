@@ -128,6 +128,11 @@ export class ExperimentManager {
 	activeId = $state<string | null>(null);
 	playback = $state<PlaybackState | null>(null);
 	experimentList = $derived(Object.values(this.experiments));
+	/** Session-only API keys — never persisted to disk. Set by the UI on load and
+	 * whenever settings change; used as fallback when a loaded experiment's
+	 * stored key is blank (keys are intentionally stripped at persist time). */
+	sessionApiKey = $state('');
+	sessionSambaNovaApiKey = $state('');
 	private experimentCounter = 0;
 	private index: ExperimentIndex;
 	private computeAbortControllers = new Map<string, AbortController>();
@@ -867,6 +872,13 @@ export class ExperimentManager {
 		// 3. Fresh stepper — tape.startRun() is intentionally skipped so
 		//    existing nlca_frames rows are preserved.
 		// -------------------------------------------------------------------
+		// API keys are never persisted — fall back to the session keys set by the UI.
+		if (!exp.config.apiKey && this.sessionApiKey) {
+			exp.config = { ...exp.config, apiKey: this.sessionApiKey };
+		}
+		if (!exp.config.sambaNovaApiKey && this.sessionSambaNovaApiKey) {
+			exp.config = { ...exp.config, sambaNovaApiKey: this.sessionSambaNovaApiKey };
+		}
 		const orchestratorConfig = buildOrchestratorConfig(exp.config);
 		const agentManager = new CellAgentManager(exp.config.gridWidth, exp.config.gridHeight);
 		const stepper = new NlcaStepper(
