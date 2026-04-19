@@ -34,6 +34,7 @@ const COLUMNS = [
 	'targetFrames',
 	'status',
 	'frameCount',
+	'totalCost',
 	'createdAt',
 	'updatedAt',
 	'dbFilename',

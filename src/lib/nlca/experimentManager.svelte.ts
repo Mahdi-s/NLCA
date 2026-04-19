@@ -171,6 +171,7 @@ export class ExperimentManager {
 					targetFrames: exp.config.targetFrames,
 					status: exp.status,
 					frameCount: exp.progress.current,
+					totalCost: String(exp.totalCost ?? 0),
 					createdAt: exp.createdAt,
 					updatedAt: Date.now(),
 					dbFilename: exp.dbFilename,
@@ -371,7 +372,7 @@ export class ExperimentManager {
 					currentColorStatus8: null,
 					currentGeneration: Number(row.frameCount) || 0,
 					bufferStatus: null,
-					totalCost: 0,
+					totalCost: Number(row.totalCost) || 0,
 					estimatedCost: 0,
 					pricingUnknown: true,
 					totalCalls: 0,
@@ -416,7 +417,7 @@ export class ExperimentManager {
 				currentColorStatus8: null,
 				currentGeneration: 0,
 				bufferStatus: null,
-				totalCost: 0,
+				totalCost: meta.totalCost ?? 0,
 				estimatedCost: 0,
 				pricingUnknown: true,
 				totalCalls: 0,
@@ -595,7 +596,7 @@ export class ExperimentManager {
 					);
 
 					if (generation % 5 === 0) {
-						await this.index.updateStatus(id, 'running', generation);
+						await this.index.updateStatus(id, 'running', generation, undefined, exp.totalCost);
 						void this.syncCsvRow(exp);
 						void this.syncJsonlMeta(exp);
 					}
@@ -619,7 +620,7 @@ export class ExperimentManager {
 					if (isRateLimit) {
 						exp.status = 'paused';
 						exp.errorMessage = `Rate limit — paused. Resume when your provider quota resets. (${msg.slice(0, 160)})`;
-						await this.index.updateStatus(id, 'paused', exp.progress.current, exp.errorMessage);
+						await this.index.updateStatus(id, 'paused', exp.progress.current, exp.errorMessage, exp.totalCost);
 						void this.syncCsvRow(exp);
 						void this.syncJsonlMeta(exp);
 						console.warn(
@@ -631,7 +632,7 @@ export class ExperimentManager {
 
 					exp.status = 'error';
 					exp.errorMessage = msg.slice(0, 200);
-					await this.index.updateStatus(id, 'error', exp.progress.current, exp.errorMessage);
+					await this.index.updateStatus(id, 'error', exp.progress.current, exp.errorMessage, exp.totalCost);
 					void this.syncCsvRow(exp);
 					void this.syncJsonlMeta(exp);
 					console.error(`[ExperimentManager] Experiment ${id} error:`, err);
@@ -641,7 +642,7 @@ export class ExperimentManager {
 
 			if (!controller.signal.aborted && exp.progress.current >= exp.progress.target) {
 				exp.status = 'completed';
-				await this.index.updateStatus(id, 'completed', exp.progress.current);
+				await this.index.updateStatus(id, 'completed', exp.progress.current, undefined, exp.totalCost);
 				void this.syncCsvRow(exp);
 				void this.syncJsonlMeta(exp);
 			}
@@ -781,7 +782,7 @@ export class ExperimentManager {
 		}
 
 		exp.status = 'paused';
-		await this.index.updateStatus(id, 'paused', exp.progress.current);
+		await this.index.updateStatus(id, 'paused', exp.progress.current, undefined, exp.totalCost);
 		void this.syncCsvRow(exp);
 		void this.syncJsonlMeta(exp);
 	}

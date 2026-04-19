@@ -423,14 +423,20 @@ export class ExperimentIndex {
 			frame_count INTEGER NOT NULL DEFAULT 0,
 			error_message TEXT
 		)`);
+		// Migrate: add total_cost column for databases created before cost tracking.
+		try {
+			await this.db.exec(`ALTER TABLE experiments ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`);
+		} catch {
+			// Column already exists — no-op.
+		}
 		this.ready = true;
 	}
 
 	async register(meta: ExperimentMeta): Promise<void> {
 		await this.init();
 		await this.db!.run(
-			`INSERT OR REPLACE INTO experiments(id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO experiments(id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message, total_cost)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				meta.id,
 				meta.label,
@@ -440,7 +446,8 @@ export class ExperimentIndex {
 				meta.createdAt,
 				meta.updatedAt,
 				meta.frameCount,
-				meta.errorMessage ?? null
+				meta.errorMessage ?? null,
+				meta.totalCost ?? 0
 			]
 		);
 	}
@@ -449,11 +456,17 @@ export class ExperimentIndex {
 		id: string,
 		status: ExperimentMeta['status'],
 		frameCount?: number,
-		errorMessage?: string
+		errorMessage?: string,
+		totalCost?: number
 	): Promise<void> {
 		await this.init();
 		const now = Date.now();
-		if (frameCount !== undefined) {
+		if (frameCount !== undefined && totalCost !== undefined) {
+			await this.db!.run(
+				`UPDATE experiments SET status = ?, updated_at = ?, frame_count = ?, error_message = ?, total_cost = ? WHERE id = ?`,
+				[status, now, frameCount, errorMessage ?? null, totalCost, id]
+			);
+		} else if (frameCount !== undefined) {
 			await this.db!.run(
 				`UPDATE experiments SET status = ?, updated_at = ?, frame_count = ?, error_message = ? WHERE id = ?`,
 				[status, now, frameCount, errorMessage ?? null, id]
@@ -469,7 +482,7 @@ export class ExperimentIndex {
 	async list(): Promise<ExperimentMeta[]> {
 		await this.init();
 		const rows = await this.db!.all(
-			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message
+			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message, total_cost
 			 FROM experiments ORDER BY created_at DESC`
 		);
 		return rows.map((row) => ({
@@ -481,7 +494,8 @@ export class ExperimentIndex {
 			createdAt: Number(row[5]),
 			updatedAt: Number(row[6]),
 			frameCount: Number(row[7]),
-			errorMessage: row[8] ? String(row[8]) : undefined
+			errorMessage: row[8] ? String(row[8]) : undefined,
+			totalCost: Number(row[9]) || 0
 		}));
 	}
 
@@ -493,7 +507,7 @@ export class ExperimentIndex {
 	async get(id: string): Promise<ExperimentMeta | null> {
 		await this.init();
 		const row = await this.db!.get(
-			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message
+			`SELECT id, label, db_filename, config_json, status, created_at, updated_at, frame_count, error_message, total_cost
 			 FROM experiments WHERE id = ?`,
 			[id]
 		);
@@ -507,7 +521,8 @@ export class ExperimentIndex {
 			createdAt: Number(row[5]),
 			updatedAt: Number(row[6]),
 			frameCount: Number(row[7]),
-			errorMessage: row[8] ? String(row[8]) : undefined
+			errorMessage: row[8] ? String(row[8]) : undefined,
+			totalCost: Number(row[9]) || 0
 		};
 	}
 }

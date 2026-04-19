@@ -184,6 +184,8 @@ export interface ExperimentMeta {
 	createdAt: number;
 	updatedAt: number;
 	frameCount: number;
+	/** Accumulated actual spend in USD across all completed frames. */
+	totalCost?: number;
 	errorMessage?: string;
 }
 
