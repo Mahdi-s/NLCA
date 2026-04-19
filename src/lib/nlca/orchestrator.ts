@@ -100,7 +100,8 @@ const SAMBANOVA_CHUNK_SIZE = 1000;
 const SAMBANOVA_MODEL_CHUNK_CAPS: Array<{ match: RegExp; cap: number }> = [
 	{ match: /llama/i, cap: 200 },
 	{ match: /qwen/i, cap: 300 },
-	{ match: /deepseek/i, cap: 400 }
+	{ match: /deepseek/i, cap: 400 },
+	{ match: /gpt-oss/i, cap: 150 }
 ];
 
 function sambanovaChunkSize(model: string | undefined): number {

@@ -613,7 +613,7 @@ export class ExperimentManager {
 					// the quota resets later. Pause the experiment instead of erroring so
 					// the user can resume tomorrow without losing progress.
 					const isRateLimit =
-						/\bHTTP\s+429\b|rate\s*limit|rate_limit_exceeded|Request would exceed rate limit/i.test(
+						/\bHTTP\s+402\b|\bHTTP\s+429\b|rate\s*limit|rate_limit_exceeded|Insufficient credits|Request would exceed rate limit/i.test(
 							msg
 						);
 					this.computeAbortControllers.delete(id);

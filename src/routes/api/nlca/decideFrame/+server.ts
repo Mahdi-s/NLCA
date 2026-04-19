@@ -561,7 +561,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 
 			// Normalise minified rows back to the canonical shape {cellId,state,color?}
 			// so the client's parser doesn't need to know which provider ran.
-			const decisions = decisionsRaw.map((d) => {
+			let decisions = decisionsRaw.map((d) => {
 				const rec = d as Record<string, unknown>;
 				const cellId = Number(rec.cellId ?? rec.i ?? NaN);
 				const state = Number(rec.state ?? rec.s ?? 0) === 1 ? 1 : 0;
@@ -578,16 +578,34 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 			}
 			if (expectedIds.size !== cells.length) throw error(400, 'Duplicate cellId in request');
 
+			// Filter invalid/duplicate model decisions; fall back to current state for missing cells
+			// rather than crashing the whole experiment with a 502.
 			const seen = new Set<number>();
-			for (const d of decisions) {
-				const cellId = d.cellId;
+			const validDecisions = decisions.filter((d) => {
+				const { cellId } = d;
 				if (!Number.isFinite(cellId) || !expectedIds.has(cellId)) {
-					throw error(502, 'Model returned invalid cellId');
+					console.warn(`[NLCA decideFrame] Ignoring invalid cellId ${cellId} from model`);
+					return false;
 				}
-				if (seen.has(cellId)) throw error(502, 'Model returned duplicate cellId');
+				if (seen.has(cellId)) {
+					console.warn(`[NLCA decideFrame] Ignoring duplicate cellId ${cellId} from model`);
+					return false;
+				}
 				seen.add(cellId);
+				return true;
+			});
+			for (const expectedId of expectedIds) {
+				if (!seen.has(expectedId)) {
+					const fb = cells.find((c) => c.cellId === expectedId)!;
+					validDecisions.push(
+						wantColor
+							? { cellId: expectedId, state: fb.self, color: fb.prevColor ?? undefined }
+							: { cellId: expectedId, state: fb.self }
+					);
+					console.warn(`[NLCA decideFrame] Missing cellId ${expectedId} — falling back to state ${fb.self}`);
+				}
 			}
-			if (seen.size !== expectedIds.size) throw error(502, 'Model returned incomplete decisions');
+			decisions = validDecisions;
 
 			// Fire-and-forget disk log (dev only to avoid cluttering production).
 			if (dev) {
