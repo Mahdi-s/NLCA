@@ -92,7 +92,7 @@
 			neighborhood: nlcaSettings.neighborhood,
 			cellColorEnabled: nlcaPrompt.cellColorHexEnabled,
 			taskDescription: nlcaPrompt.taskDescription,
-			promptPresetId: undefined,
+			promptPresetId: nlcaPrompt.selectedPresetId ?? undefined,
 			useAdvancedMode: nlcaPrompt.useAdvancedMode,
 			advancedTemplate: nlcaPrompt.advancedTemplate,
 			// SambaNova hyperscale enforces memoryWindow=0 to maximise dedup.

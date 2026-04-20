@@ -11,7 +11,7 @@ import type { Simulation } from '@games-of-life/webgpu';
 // Simulation state
 let isPlaying = $state(true); // Start playing by default
 let isRecording = $state(false);
-let speed = $state(120); // Steps per second (default 120 fps)
+let speed = $state(1); // Steps per second — default to 1 so NLCA playback paces deliberately
 let brushSize = $state(25);
 let brushState = $state(1); // 1 = draw alive, 0 = erase
 let brushType = $state<BrushType>('solid'); // Brush fill type

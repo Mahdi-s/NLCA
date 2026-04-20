@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
 	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
+	import { getPresetById } from '$lib/stores/nlcaPrompt.svelte.js';
+	import type { NlcaNeighborhood } from '$lib/nlca/types.js';
 
 	interface Props {
 		open: boolean;
@@ -15,6 +17,40 @@
 	let extendId = $state<string | null>(null);
 	let extendFrames = $state(10);
 
+	// Favorites — persisted to localStorage so a star survives reloads.
+	const FAV_KEY = 'nlca_favorite_experiments';
+	function loadFavs(): Set<string> {
+		if (typeof window === 'undefined') return new Set();
+		try {
+			const raw = window.localStorage.getItem(FAV_KEY);
+			if (!raw) return new Set();
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed) ? new Set(parsed.filter((x) => typeof x === 'string')) : new Set();
+		} catch {
+			return new Set();
+		}
+	}
+	function saveFavs(s: Set<string>): void {
+		if (typeof window === 'undefined') return;
+		try {
+			window.localStorage.setItem(FAV_KEY, JSON.stringify([...s]));
+		} catch {
+			// quota / privacy mode — silent
+		}
+	}
+	let favorites = $state<Set<string>>(loadFavs());
+	let favoritesCollapsed = $state(false);
+	let allCollapsed = $state(false);
+
+	function toggleFav(id: string, e: MouseEvent) {
+		e.stopPropagation();
+		const next = new Set(favorites);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		favorites = next;
+		saveFavs(next);
+	}
+
 	// Reset transient UI state whenever the active experiment changes so stale
 	// extend inputs / delete confirms don't bleed across cards.
 	$effect(() => {
@@ -22,6 +58,13 @@
 		confirmDeleteId = null;
 		extendId = null;
 	});
+
+	const favoriteExperiments = $derived(
+		manager.experimentList.filter((e) => favorites.has(e.id))
+	);
+	const unfavoriteExperiments = $derived(
+		manager.experimentList.filter((e) => !favorites.has(e.id))
+	);
 
 	function statusIcon(status: Experiment['status']): string {
 		switch (status) {
@@ -47,7 +90,133 @@
 		const d = new Date(ts);
 		return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	}
+
+	function presetName(id: string | undefined): string | null {
+		if (!id) return null;
+		return getPresetById(id)?.name ?? null;
+	}
+
+	function shortModel(model: string): string {
+		return model.split('/').pop() ?? model;
+	}
+
+	function providerName(p: string | undefined): string {
+		return p === 'sambanova' ? 'SambaNova' : 'OpenRouter';
+	}
+
+	function neighborhoodLabel(n: NlcaNeighborhood): string {
+		if (n === 'moore') return 'Moore';
+		if (n === 'vonNeumann') return 'von Neumann';
+		if (n === 'extendedMoore') return 'Ext. Moore';
+		return n;
+	}
+
+	function cardTitle(exp: Experiment): string {
+		const p = presetName(exp.config.promptPresetId);
+		if (p) return p;
+		const task = exp.config.taskDescription?.trim() ?? '';
+		if (task.length === 0) return `Exp ${exp.id.slice(0, 6)}`;
+		return task.length > 36 ? task.slice(0, 33) + '…' : task;
+	}
 </script>
+
+{#snippet expCard(exp: Experiment)}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="exp-card"
+		class:active={exp.id === manager.activeId}
+		onclick={() => manager.setActive(exp.id)}
+		role="button"
+		tabindex="0"
+		onkeydown={() => {}}
+	>
+		<div class="exp-top">
+			<span class="exp-status" style="color: {statusColor(exp.status)}">{statusIcon(exp.status)}</span>
+			<span class="exp-label">{cardTitle(exp)}</span>
+			<button
+				class="star-btn"
+				class:starred={favorites.has(exp.id)}
+				onclick={(e) => toggleFav(exp.id, e)}
+				aria-label={favorites.has(exp.id) ? 'Remove from favorites' : 'Add to favorites'}
+				title={favorites.has(exp.id) ? 'Remove from favorites' : 'Add to favorites'}
+			>{favorites.has(exp.id) ? '★' : '☆'}</button>
+		</div>
+		<div class="exp-meta">
+			<span class="meta-model" title={exp.config.model}>{shortModel(exp.config.model)}</span>
+			<span class="provider-tag provider-{exp.config.apiProvider ?? 'openrouter'}">
+				{providerName(exp.config.apiProvider)}
+			</span>
+			<span>{exp.config.gridWidth}×{exp.config.gridHeight}</span>
+			<span class="meta-nbh">{neighborhoodLabel(exp.config.neighborhood)}</span>
+			<span>{exp.progress.current}/{exp.progress.target}</span>
+			<span>{formatTime(exp.createdAt)}</span>
+		</div>
+		<div
+			class="exp-cost"
+			title={exp.pricingUnknown && exp.totalCost === 0
+				? 'No public pricing for this model'
+				: exp.status === 'completed'
+					? `Final cost from actual usage. Initial projection: $${exp.estimatedCost.toFixed(4)}.`
+					: `Live cost from actual usage. Projected full-run cost: $${exp.estimatedCost.toFixed(4)}.`}
+		>
+			{#if exp.pricingUnknown && exp.totalCost === 0}
+				<span class="cost-label">Cost</span> <span class="cost-val muted">—</span>
+			{:else if exp.status === 'completed'}
+				<span class="cost-label">Cost</span>
+				<span class="cost-val final">${exp.totalCost.toFixed(4)}</span>
+			{:else}
+				<span class="cost-label">Cost</span>
+				<span class="cost-val">${exp.totalCost.toFixed(4)}</span>
+				{#if exp.estimatedCost > 0}
+					<span class="cost-val muted">/ ~${exp.estimatedCost.toFixed(4)}</span>
+				{/if}
+			{/if}
+		</div>
+		{#if exp.errorMessage}
+			<div class="exp-error">{exp.errorMessage}</div>
+		{/if}
+		{#if exp.noTapeData}
+			<div class="exp-no-data">Frame data unavailable (database file missing)</div>
+		{/if}
+		<div class="exp-actions">
+			{#if exp.status === 'running'}
+				<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.pauseExperiment(exp.id); }}>Pause</button>
+			{:else if exp.status === 'paused'}
+				<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.resumeExperiment(exp.id); }}>Resume</button>
+			{:else if exp.status === 'completed' || exp.status === 'error'}
+				{#if extendId === exp.id}
+					<input
+						class="extend-input"
+						type="number"
+						min="1"
+						max="500"
+						bind:value={extendFrames}
+						onclick={(e) => e.stopPropagation()}
+					/>
+					<button class="exp-action-btn accent" onclick={(e) => {
+						e.stopPropagation();
+						void manager.extendExperiment(exp.id, extendFrames);
+						extendId = null;
+					}}>Go</button>
+					<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); extendId = null; }}>✕</button>
+				{:else}
+					<button class="exp-action-btn" onclick={(e) => {
+						e.stopPropagation();
+						extendId = exp.id;
+						extendFrames = exp.config.targetFrames;
+					}}>Extend</button>
+				{/if}
+			{/if}
+			{#if confirmDeleteId === exp.id}
+				<button class="exp-action-btn danger" onclick={(e) => { e.stopPropagation(); manager.deleteExperiment(exp.id); confirmDeleteId = null; }}>Confirm</button>
+				<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); confirmDeleteId = null; }}>Cancel</button>
+			{:else}
+				<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); confirmDeleteId = exp.id; }}>Delete</button>
+			{/if}
+		</div>
+	</div>
+{/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="panel" class:open onkeydown={() => {}}>
@@ -59,97 +228,56 @@
 		</div>
 	</div>
 
-	<!-- Experiment list -->
 	<div class="experiment-list">
-		{#each manager.experimentList as exp (exp.id)}
-			<div
-				class="exp-card"
-				class:active={exp.id === manager.activeId}
-				onclick={() => manager.setActive(exp.id)}
-				role="button"
-				tabindex="0"
-				onkeydown={() => {}}
-			>
-				<div class="exp-top">
-					<span class="exp-status" style="color: {statusColor(exp.status)}">{statusIcon(exp.status)}</span>
-					<span class="exp-label">{exp.label}</span>
-				</div>
-				<div class="exp-meta">
-					<span class="provider-tag provider-{exp.config.apiProvider ?? 'openrouter'}">
-						{exp.config.apiProvider === 'sambanova' ? 'SambaNova' : 'OpenRouter'}
-					</span>
-					<span>{exp.config.gridWidth}×{exp.config.gridHeight}</span>
-					<span>{exp.progress.current}/{exp.progress.target}</span>
-					<span>{formatTime(exp.createdAt)}</span>
-				</div>
-				<div class="exp-cost" title={
-					exp.pricingUnknown && exp.totalCost === 0
-						? "No public pricing for this model"
-						: exp.status === 'completed'
-							? `Final cost from actual usage. Initial projection: $${exp.estimatedCost.toFixed(4)}.`
-							: `Live cost from actual usage. Projected full-run cost: $${exp.estimatedCost.toFixed(4)}.`
-				}>
-					{#if exp.pricingUnknown && exp.totalCost === 0}
-						<span class="cost-label">Cost</span> <span class="cost-val muted">—</span>
-					{:else if exp.status === 'completed'}
-						<span class="cost-label">Cost</span>
-						<span class="cost-val final">${exp.totalCost.toFixed(4)}</span>
-					{:else}
-						<span class="cost-label">Cost</span>
-						<span class="cost-val">${exp.totalCost.toFixed(4)}</span>
-						{#if exp.estimatedCost > 0}
-							<span class="cost-val muted">/ ~${exp.estimatedCost.toFixed(4)}</span>
-						{/if}
-					{/if}
-				</div>
-			{#if exp.errorMessage}
-				<div class="exp-error">{exp.errorMessage}</div>
-			{/if}
-			{#if exp.noTapeData}
-				<div class="exp-no-data">Frame data unavailable (database file missing)</div>
-			{/if}
-				<div class="exp-actions">
-					{#if exp.status === 'running'}
-						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.pauseExperiment(exp.id); }}>Pause</button>
-					{:else if exp.status === 'paused'}
-						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); manager.resumeExperiment(exp.id); }}>Resume</button>
-					{:else if exp.status === 'completed' || exp.status === 'error'}
-						{#if extendId === exp.id}
-							<input
-								class="extend-input"
-								type="number"
-								min="1"
-								max="500"
-								bind:value={extendFrames}
-								onclick={(e) => e.stopPropagation()}
-							/>
-							<button class="exp-action-btn accent" onclick={(e) => {
-								e.stopPropagation();
-								void manager.extendExperiment(exp.id, extendFrames);
-								extendId = null;
-							}}>Go</button>
-							<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); extendId = null; }}>✕</button>
-						{:else}
-							<button class="exp-action-btn" onclick={(e) => {
-								e.stopPropagation();
-								extendId = exp.id;
-								extendFrames = exp.config.targetFrames;
-							}}>Extend</button>
-						{/if}
-					{/if}
-					{#if confirmDeleteId === exp.id}
-						<button class="exp-action-btn danger" onclick={(e) => { e.stopPropagation(); manager.deleteExperiment(exp.id); confirmDeleteId = null; }}>Confirm</button>
-						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); confirmDeleteId = null; }}>Cancel</button>
-					{:else}
-						<button class="exp-action-btn" onclick={(e) => { e.stopPropagation(); confirmDeleteId = exp.id; }}>Delete</button>
-					{/if}
-				</div>
-			</div>
-		{:else}
+		{#if manager.experimentList.length === 0}
 			<div class="empty-state">
 				No experiments yet. Configure your settings and press Play to start one.
 			</div>
-		{/each}
+		{:else}
+			<!-- Favorites section -->
+			<div class="exp-section">
+				<button
+					class="section-header"
+					onclick={() => (favoritesCollapsed = !favoritesCollapsed)}
+					aria-expanded={!favoritesCollapsed}
+				>
+					<span class="section-chevron" class:collapsed={favoritesCollapsed}>▾</span>
+					<span class="section-title">Favorites</span>
+					<span class="section-count">{favoriteExperiments.length}</span>
+				</button>
+				{#if !favoritesCollapsed}
+					<div class="section-content">
+						{#each favoriteExperiments as exp (exp.id)}
+							{@render expCard(exp)}
+						{:else}
+							<div class="section-empty">Star an experiment to pin it here.</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			<!-- All section -->
+			<div class="exp-section">
+				<button
+					class="section-header"
+					onclick={() => (allCollapsed = !allCollapsed)}
+					aria-expanded={!allCollapsed}
+				>
+					<span class="section-chevron" class:collapsed={allCollapsed}>▾</span>
+					<span class="section-title">All</span>
+					<span class="section-count">{unfavoriteExperiments.length}</span>
+				</button>
+				{#if !allCollapsed}
+					<div class="section-content">
+						{#each unfavoriteExperiments as exp (exp.id)}
+							{@render expCard(exp)}
+						{:else}
+							<div class="section-empty">All experiments are starred.</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -240,8 +368,76 @@
 		padding: 8px;
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 4px;
 		scrollbar-width: thin;
+	}
+
+	/* Collapsible sections */
+	.exp-section {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.section-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 8px;
+		background: none;
+		border: none;
+		color: var(--ui-text, #888);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		cursor: pointer;
+		text-align: left;
+		border-radius: 4px;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.section-header:hover {
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--ui-text-hover, #fff);
+	}
+
+	.section-chevron {
+		display: inline-block;
+		font-size: 10px;
+		line-height: 1;
+		transition: transform 0.15s ease;
+		color: var(--ui-text, #888);
+	}
+	.section-chevron.collapsed {
+		transform: rotate(-90deg);
+	}
+
+	.section-title {
+		flex: 1;
+	}
+
+	.section-count {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		font-size: 10px;
+		color: var(--ui-text, #888);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.section-content {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 4px 0 6px;
+	}
+
+	.section-empty {
+		padding: 8px 10px;
+		font-size: 11px;
+		color: var(--ui-text, #888);
+		font-style: italic;
+		opacity: 0.7;
 	}
 
 	.exp-card {
@@ -284,15 +480,48 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.star-btn {
+		background: none;
+		border: none;
+		color: rgba(255, 255, 255, 0.25);
+		font-size: 14px;
+		line-height: 1;
+		cursor: pointer;
+		padding: 2px 4px;
+		border-radius: 4px;
+		transition: color 0.15s, background 0.15s;
+		flex-shrink: 0;
+	}
+	.star-btn:hover {
+		color: rgba(255, 255, 255, 0.6);
+		background: rgba(255, 255, 255, 0.06);
+	}
+	.star-btn.starred {
+		color: #facc15;
+	}
+	.star-btn.starred:hover {
+		color: #fde047;
 	}
 
 	.exp-meta {
 		display: flex;
-		gap: 8px;
+		flex-wrap: wrap;
+		gap: 6px;
 		font-size: 10px;
 		color: var(--ui-text, #888);
 		font-variant-numeric: tabular-nums;
 		align-items: center;
+	}
+	.meta-model {
+		color: var(--ui-text-hover, #e5e5e5);
+		font-weight: 500;
+	}
+	.meta-nbh {
+		opacity: 0.85;
 	}
 	.provider-tag {
 		font-size: 9px;
