@@ -779,7 +779,7 @@ export class ExperimentManager {
 			exp.currentColorsHex = frame.colorsHex ?? null;
 
 			// Derive colorStatus8 from colorsHex: present hex = valid (1), null = missing (0).
-			// Without this, Canvas.setExperimentGrid falls through to clearCellColors() and the
+			// Without this, Canvas's grid-data effect falls through to clearCellColors() and the
 			// shader renders every alive cell with the default (pink) colour.
 			if (frame.colorsHex) {
 				const status = new Uint8Array(totalCells);
