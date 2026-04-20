@@ -13,8 +13,16 @@ export default defineConfig({
 		external: ['@sqlite.org/sqlite-wasm', 'better-sqlite3']
 	},
 	resolve: {
-		// Prefer browser exports over Node.js exports
-		conditions: ['browser', 'import', 'module', 'default']
+		// Prefer browser exports; keep `development` so esm-env picks its
+		// `./true.js` branch (→ dev=true via $app/environment). Without this,
+		// esm-env falls through to its dev-fallback, which reads
+		// globalThis.process.env.NODE_ENV — undefined in the browser — and
+		// returns undefined. That makes $app/environment's `dev` falsy even
+		// under `npm run dev`, routing SQLite-backed persistence to the
+		// browser sqlite-wasm loader instead of the dev-only ServerDbHandle
+		// HTTP API. Browser sqlite-wasm init hangs indefinitely when OPFS
+		// isn't available, so the whole experiment index load blocks forever.
+		conditions: ['browser', 'development', 'import', 'module', 'default']
 	},
 	server: {
 		headers: {
