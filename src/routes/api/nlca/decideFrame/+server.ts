@@ -138,9 +138,10 @@ function buildSystemPrompt(
 	const compressed = cfg.compressPayload === true && !wantColor;
 
 	// SambaNova Hyperscale: rigid zero-thinking directive. Bypass conversational
-	// templates entirely. We now use json_object mode (not json_schema) because
-	// strict mode on SambaNova rejects the whole response when Llama hallucinates
-	// — so the exact output shape must live in the prompt.
+	// templates entirely. We pair this with json_schema strict=false at the API
+	// layer — the schema gives the model a target, the prompt repeats the exact
+	// shape for models that ignore the response_format hint, and the loose
+	// validation mode lets responses through even when Llama drifts on one cell.
 	if (provider === 'sambanova') {
 		const schemaLine = wantColor
 			? 'Output EXACTLY this JSON shape: {"d":[{"i":<integer cellId>,"s":0 or 1,"c":"#RRGGBB uppercase hex"}, ...]}'
@@ -424,27 +425,29 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		}
 	];
 
-	// SambaNova's strict `json_schema` mode is a *soft* constraint — when Llama
-	// hallucinates mid-generation (observed: Chinese SEO-spam tokens injected
-	// into `c` string values) the whole response gets rejected with "Model did
-	// not output valid JSON". Use the more forgiving `json_object` format on
-	// SambaNova; the schema shape is already described in the zero-thinking
-	// system prompt, and we parse minified `d/i/s/c` keys below either way.
-	const responseFormat =
+	// SambaNova: start with `json_schema` strict=false so the model has a schema
+	// target (more reliable than bare json_object per SambaNova's own guidance)
+	// but the server won't hard-reject on minor deviations the way strict=true
+	// does. If the response validator still rejects the output (observed: Llama
+	// hallucinates Chinese SEO-spam tokens into `c` values), we downgrade to
+	// plain json_object on a retry below — better a loose-parsed frame than a
+	// 422 that wastes a quota-cycle.
+	//
+	// OpenRouter: keep strict json_schema; provider-level enforcement varies by
+	// model but most of our supported models handle it well.
+	const initialResponseFormat =
 		provider === 'sambanova'
-			? { type: 'json_object' }
-			: {
-					type: 'json_schema',
-					json_schema: { name: 'nlca_frame_decisions', strict: true, schema }
-				};
+			? { type: 'json_schema', json_schema: { name: 'nlca_frame_decisions', strict: false, schema } }
+			: { type: 'json_schema', json_schema: { name: 'nlca_frame_decisions', strict: true, schema } };
 
 	const body: Record<string, unknown> = {
 		model,
 		temperature,
 		max_tokens: maxOutputTokens,
 		messages,
-		response_format: responseFormat
+		response_format: initialResponseFormat
 	};
+	let structuredOutputDowngraded = false;
 
 	const maxAttempts = 3;
 	let attempt = 0;
@@ -487,13 +490,24 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 					console.log(`[NLCA decideFrame] rate-limited (no retry) body=${text.slice(0, 160)}`);
 					throw error(429, `Rate limit exceeded on ${provider}. ${text.slice(0, 200)}`);
 				}
-				// Invalid structured output from SambaNova when the model hallucinates
-				// mid-generation. Retrying at temperature=0 is pointless. Fail fast.
+				// Invalid structured output: the upstream validator rejected the
+				// model's text as non-conforming JSON. Temperature=0 means retrying
+				// the identical request is pointless — but we CAN change the
+				// response_format and retry that. Downgrade strict json_schema to
+				// bare json_object for one attempt; if that still fails, give up.
 				if (/Invalid structured output|Model did not output valid JSON/i.test(text)) {
-					console.log(`[NLCA decideFrame] invalid-structured-output (no retry) body=${text.slice(0, 160)}`);
+					if (provider === 'sambanova' && !structuredOutputDowngraded && attempt < maxAttempts) {
+						structuredOutputDowngraded = true;
+						body.response_format = { type: 'json_object' };
+						console.log(
+							`[NLCA decideFrame] downgrading sambanova to json_object and retrying attempt=${attempt}/${maxAttempts}`
+						);
+						continue;
+					}
+					console.log(`[NLCA decideFrame] invalid-structured-output (no retry left) body=${text.slice(0, 160)}`);
 					throw error(
 						422,
-						`${provider} model output violated JSON contract (no retry). Try a different model or disable color mode. ${text.slice(0, 200)}`
+						`${provider} model output violated JSON contract (no retry left). Try a different model or disable color mode. ${text.slice(0, 200)}`
 					);
 				}
 			}

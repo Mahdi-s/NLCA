@@ -536,11 +536,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		}
 	];
 
-	// SambaNova: json_object instead of strict json_schema — see decideFrame.
-	// OpenRouter: keep strict schema, plus stream_options + reasoning knobs.
+	// SambaNova: use json_schema with strict=false so the model has a schema
+	// target (more reliable than bare json_object per SambaNova docs) but the
+	// upstream validator won't hard-reject on soft deviations the way strict
+	// does. OpenRouter: keep strict schema + stream_options + reasoning knobs.
 	const responseFormat =
 		provider === 'sambanova'
-			? { type: 'json_object' }
+			? { type: 'json_schema', json_schema: { name: 'nlca_frame_decisions', strict: false, schema } }
 			: {
 					type: 'json_schema',
 					json_schema: { name: 'nlca_frame_decisions', strict: true, schema }

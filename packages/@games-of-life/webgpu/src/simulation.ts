@@ -1489,15 +1489,22 @@ export class Simulation {
 				commandEncoder.copyBufferToBuffer(currentBuffer, 0, this.readbackBuffer, 0, bufferSize);
 				this.device.queue.submit([commandEncoder.finish()]);
 
-				// Map the readback buffer and count alive cells
-				await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+				// Map the readback buffer and count alive cells.
+				try {
+					await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+				} catch (err) {
+					if (err instanceof Error && (err.name === 'AbortError' || err.name === 'OperationError')) {
+						return this._aliveCells;
+					}
+					throw err;
+				}
 				const data = new Uint32Array(this.readbackBuffer.getMappedRange());
-				
+
 				let count = 0;
 				for (let i = 0; i < data.length; i++) {
 					if (data[i] === 1) count++;
 				}
-				
+
 				this.readbackBuffer.unmap();
 				this._aliveCells = count;
 				return count;
@@ -1550,10 +1557,20 @@ export class Simulation {
 		commandEncoder.copyBufferToBuffer(currentBuffer, 0, this.readbackBuffer, 0, bufferSize);
 		this.device.queue.submit([commandEncoder.finish()]);
 
-		await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+		try {
+			await this.readbackBuffer.mapAsync(GPUMapMode.READ);
+		} catch (err) {
+			// A concurrent destroy() (e.g. resize on experiment switch) aborts the
+			// pending mapAsync. Callers shouldn't see that as a hard failure — the
+			// data they asked for belonged to a renderer that no longer exists.
+			if (err instanceof Error && (err.name === 'AbortError' || err.name === 'OperationError')) {
+				return new Uint32Array(0);
+			}
+			throw err;
+		}
 		const data = new Uint32Array(this.readbackBuffer.getMappedRange().slice(0));
 		this.readbackBuffer.unmap();
-		
+
 		return data;
 	}
 
