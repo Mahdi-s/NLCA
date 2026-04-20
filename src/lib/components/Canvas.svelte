@@ -20,6 +20,8 @@
 	import { packCellColorHexToU32, type PromptConfig } from '$lib/nlca/prompt.js';
 	import { NlcaFrameBuffer, type BufferStatus, type BufferedFrame } from '$lib/nlca/frameBuffer.js';
 	import NlcaTimeline from '$lib/components/NlcaTimeline.svelte';
+	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
+	import { prefersReducedMotion } from '$lib/utils/motion.js';
 
 	// Props
 	interface Props {
@@ -32,6 +34,7 @@
 	const audioState = getAudioState();
 	const nlcaSettings = getNlcaSettingsState();
 	const initialNlcaSettings = nlcaSettings.toJSON();
+	const nlcaStore = getNlcaStore();
 	
 	// Convert spectrum mode string to number for shader
 	function getSpectrumModeIndex(mode: SpectrumMode): number {
@@ -251,6 +254,31 @@
 			nlcaAvgLatencyMs = null;
 			nlcaLastError = null;
 			if (simulation) void ensureNlcaReady(simState.gridWidth, simState.gridHeight);
+		}
+	});
+
+	/* Effect 1 — Dimensions + auto-fit.
+	 * Runs whenever the active experiment id or its grid dimensions change.
+	 * Resizes the simulation if needed, then refits the camera so the entire
+	 * grid is visible. This is what eliminates the "plops in the middle"
+	 * behavior on experiment switch. */
+	let lastFittedExpId: string | null = null;
+	$effect(() => {
+		if (!nlcaMode) return;
+		const active = nlcaStore.active;
+		if (!active || !simulation || !ctx) return;
+
+		const w = active.config.gridWidth;
+		const h = active.config.gridHeight;
+		const dimsChanged = simState.gridWidth !== w || simState.gridHeight !== h;
+
+		if (dimsChanged) {
+			resize(w, h);
+		}
+
+		if (dimsChanged || lastFittedExpId !== active.id) {
+			simulation.resetView(canvasWidth, canvasHeight, !prefersReducedMotion(), 300);
+			lastFittedExpId = active.id;
 		}
 	});
 
