@@ -1,14 +1,15 @@
 <script lang="ts">
-	import type { ExperimentManager, Experiment } from '$lib/nlca/experimentManager.svelte.js';
+	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
+	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
 
 	interface Props {
-		manager: ExperimentManager;
 		open: boolean;
 		onclose: () => void;
 		onNew: () => void;
 	}
 
-	let { manager, open, onclose, onNew }: Props = $props();
+	let { open, onclose, onNew }: Props = $props();
+	const manager = getNlcaStore();
 
 	let confirmDeleteId = $state<string | null>(null);
 	let extendId = $state<string | null>(null);

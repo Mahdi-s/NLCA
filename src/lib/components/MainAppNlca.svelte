@@ -14,7 +14,7 @@
 	import NlcaPromptViewer from '$lib/components/NlcaPromptViewer.svelte';
 	import NlcaHUD from '$lib/components/NlcaHUD.svelte';
 	import NlcaExperimentPanel from './NlcaExperimentPanel.svelte';
-	import { ExperimentManager } from '$lib/nlca/experimentManager.svelte.js';
+	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
 	import { getNlcaSettingsState } from '$lib/stores/nlcaSettings.svelte.js';
 	import { getNlcaPromptState } from '$lib/stores/nlcaPrompt.svelte.js';
 	import type { ExperimentConfig } from '$lib/nlca/types.js';
@@ -44,7 +44,7 @@
 	let nlcaBatchRunCompleted = $state(0);
 
 	// Experiment Manager
-	const experimentManager = new ExperimentManager();
+	const experimentManager = getNlcaStore();
 	let showExperimentPanel = $state(false);
 	/** Hide the HUD (top-left info box) and the Controls toolbar for a clean
 	 * canvas view. Toggled with R so users can grab an uncluttered screenshot
@@ -481,7 +481,6 @@
 	{/if}
 
 	<NlcaExperimentPanel
-		manager={experimentManager}
 		open={showExperimentPanel}
 		onclose={() => showExperimentPanel = false}
 		onNew={handleNewExperiment}
