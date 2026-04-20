@@ -245,6 +245,7 @@ export class ExperimentManager {
 
 		this.experiments[id] = exp;
 		this.activeId = id;
+		this.lastAccessedAt.set(id, ++this.lruClock);
 		void this.refreshEstimatedCost(id);
 
 		await persistence.registerMeta(exp);
@@ -439,6 +440,7 @@ export class ExperimentManager {
 		const token = ++this.playbackToken;
 		if (onCancelAnim) this.playbackCancelAnim = onCancelAnim;
 		this.activeId = id;
+		this.lastAccessedAt.set(id, ++this.lruClock);
 		const totalFrames = exp.progress.current;
 		this.playback = { id, currentFrame: 0, totalFrames, isPaused: false };
 
