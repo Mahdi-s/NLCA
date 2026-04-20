@@ -65,53 +65,6 @@
 
 	let canvas: Canvas;
 
-	// Push active experiment's grid to Canvas whenever it changes. Also clear the
-	// canvas whenever the active experiment is switched to one that hasn't
-	// loaded its grid yet (either because a rehydrate is in flight or the tape
-	// is missing) — otherwise the previously-active experiment's pixels ghost
-	// through and the user can't tell the switch actually landed.
-	//
-	// During playback we step out of the way entirely: the playback loop drives
-	// the canvas directly via animateTransition(), and we don't want to snap
-	// the final frame in mid-animation.
-	let lastRenderedExpId: string | null = null;
-	let lastRenderedGeneration: number = -1;
-	$effect(() => {
-		if (!canvas) return;
-		if (experimentManager.playback) return;
-		const active = experimentManager.active;
-		const id = active?.id ?? null;
-		const gen = active?.currentGeneration ?? -1;
-		const gridPresent = active?.currentGrid != null;
-
-		if (!active) {
-			if (lastRenderedExpId !== null) {
-				lastRenderedExpId = null;
-				lastRenderedGeneration = -1;
-			}
-			return;
-		}
-
-		if (!gridPresent) {
-			if (lastRenderedExpId !== id) {
-				canvas.clearExperimentGrid(active.config.gridWidth, active.config.gridHeight);
-				lastRenderedExpId = id;
-				lastRenderedGeneration = -1;
-			}
-			return;
-		}
-
-		canvas.setExperimentGrid(
-			active.currentGrid!,
-			active.config.gridWidth,
-			active.config.gridHeight,
-			active.currentColorsHex,
-			active.currentColorStatus8
-		);
-		lastRenderedExpId = id;
-		lastRenderedGeneration = gen;
-	});
-
 	/** Map the user's speed knob (steps-per-second, 1..MAX_SPEED) to a per-frame
 	 * playback duration. Slower speeds get more time to stagger; faster speeds
 	 * compress the stagger window but still leave enough for the fade. */

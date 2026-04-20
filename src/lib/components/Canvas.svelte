@@ -282,6 +282,35 @@
 		}
 	});
 
+	/* Effect 2 — Grid data.
+	 * Pushes the active experiment's grid + colors into the renderer whenever
+	 * they change. Skips while playback is driving the canvas directly. */
+	$effect(() => {
+		if (!nlcaMode) return;
+		if (!simulation || !ctx) return;
+		if (nlcaStore.playback) return; // playback loop drives canvas directly
+		const active = nlcaStore.active;
+		if (!active || !active.currentGrid) return;
+
+		simulation.setCellData(active.currentGrid);
+
+		if (nlcaUseCellColors && active.currentColorsHex && active.currentColorStatus8) {
+			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== active.currentGrid.length) {
+				nlcaCellColorsPacked = new Uint32Array(active.currentGrid.length);
+			}
+			mergePackedColors(
+				nlcaCellColorsPacked,
+				active.currentGrid,
+				active.currentColorsHex,
+				active.currentColorStatus8
+			);
+			simulation.setCellColorsPacked(nlcaCellColorsPacked);
+		} else {
+			nlcaCellColorsPacked = null;
+			simulation.clearCellColors();
+		}
+	});
+
 	function newRunId(): string {
 		return (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
 			? crypto.randomUUID()
@@ -1934,50 +1963,6 @@
 
 	export function getSimulation(): Simulation | null {
 		return simulation;
-	}
-
-	/**
-	 * Push an external experiment grid into the Canvas for rendering.
-	 * Resizes the simulation if dimensions differ.
-	 */
-	export function setExperimentGrid(
-		grid: Uint32Array,
-		width: number,
-		height: number,
-		colorsHex?: Array<string | null> | null,
-		colorStatus8?: Uint8Array | null
-	) {
-		if (!simulation || !ctx) return;
-		if (simState.gridWidth !== width || simState.gridHeight !== height) {
-			resize(width, height);
-		}
-		simulation.setCellData(grid);
-		if (nlcaUseCellColors && colorsHex && colorStatus8) {
-			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== width * height) {
-				nlcaCellColorsPacked = new Uint32Array(width * height);
-			}
-			mergePackedColors(nlcaCellColorsPacked, grid, colorsHex, colorStatus8);
-			simulation.setCellColorsPacked(nlcaCellColorsPacked);
-		} else {
-			nlcaCellColorsPacked = null;
-			simulation.clearCellColors();
-		}
-	}
-
-	/**
-	 * Reset the canvas to an empty grid of the given dimensions. Used when
-	 * switching to an experiment whose frame data is unavailable on disk, to
-	 * prevent the previously-active experiment's cells from ghosting through.
-	 */
-	export function clearExperimentGrid(width: number, height: number) {
-		if (!simulation || !ctx) return;
-		if (simState.gridWidth !== width || simState.gridHeight !== height) {
-			resize(width, height);
-		}
-		const empty = new Uint32Array(width * height);
-		simulation.setCellData(empty);
-		nlcaCellColorsPacked = null;
-		simulation.clearCellColors();
 	}
 
 	// --- Playback animation -----------------------------------------------------
