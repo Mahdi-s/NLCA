@@ -110,6 +110,8 @@ export interface PlaybackState {
 	isPaused: boolean;
 }
 
+export type HydrationState = 'idle' | 'loading' | 'ready' | 'missing';
+
 /** Per-frame animation driver passed in by the UI coordinator (MainAppNlca).
  * Resolves when the transition completes, or early when cancelled. */
 export type PlaybackAnimator = (
@@ -126,6 +128,7 @@ export class ExperimentManager {
 	experiments = $state<Record<string, Experiment>>({});
 	activeId = $state<string | null>(null);
 	playback = $state<PlaybackState | null>(null);
+	hydration = $state<Record<string, HydrationState>>({});
 	experimentList = $derived(Object.values(this.experiments));
 	/** Session-only API keys — never persisted to disk. Set by the UI on load and
 	 * whenever settings change; used as fallback when a loaded experiment's
@@ -684,86 +687,74 @@ export class ExperimentManager {
 
 	setActive(id: string): void {
 		if (!(id in this.experiments)) return;
-		// Stop any in-progress playback when switching experiments so the canvas
-		// $effect isn't blocked and the new experiment renders immediately.
 		if (this.playback) this.stopPlayback();
+
+		// Supersede any in-flight hydration for the previously-active experiment so
+		// a stale slow-path load can't flip a background experiment to 'ready' after
+		// the user has already switched away.
+		if (this.activeId && this.activeId !== id) {
+			const prev = this.activeId;
+			this.rehydrateToken.set(prev, (this.rehydrateToken.get(prev) ?? 0) + 1);
+		}
+
 		this.activeId = id;
 		const exp = this.experiments[id];
 		if (!exp) return;
-		// Running experiments have fresh in-memory state from the compute loop.
-		if (exp.status === 'running') return;
-		if (exp.progress.current <= 0) return;
-		// Grid already loaded in this session — switching is instant; skip re-fetch
-		// to avoid the blank-canvas flicker caused by clearing currentGrid before
-		// the async JSONL reload completes.
-		if (exp.currentGrid !== null) return;
+
+		// Fast path: grid already in memory (running, cached, or recently loaded).
+		if (exp.currentGrid) {
+			this.hydration[id] = 'ready';
+			return;
+		}
+
+		// Running experiment with no grid yet — compute loop will populate.
+		if (exp.status === 'running') {
+			this.hydration[id] = 'loading';
+			return;
+		}
+
+		// Slow path: hydrate from disk.
+		this.hydration[id] = 'loading';
 		const token = (this.rehydrateToken.get(id) ?? 0) + 1;
 		this.rehydrateToken.set(id, token);
-		void this.rehydrateFromTape(id, token).catch((err) => {
+		void this.hydrateFromDisk(id, token).catch((err) => {
+			if (this.rehydrateToken.get(id) !== token) return;
+			this.hydration[id] = 'missing';
 			console.warn(`[ExperimentManager] Failed to rehydrate grid for ${id}:`, err);
 		});
 	}
 
-	/** Reads the actual latest frame count from the DB, updates progress, then seeks to that frame.
-	 * Falls back to the disk-backed JSONL tape when SQLite has no data — the
-	 * browser's sqlite-wasm handle is in-memory only in dev mode so SQLite
-	 * won't survive a page reload, but the JSONL file will. */
-	private async rehydrateFromTape(id: string, token: number): Promise<void> {
+	private async hydrateFromDisk(id: string, token: number): Promise<void> {
 		const exp = this.experiments[id];
 		if (!exp) return;
-		try {
-			const fileExists = await exp.tape.fileExists();
-			if (this.rehydrateToken.get(id) !== token) return;
 
-			let latestGen = fileExists ? await exp.tape.getLatestGeneration(id) : 0;
-			if (this.rehydrateToken.get(id) !== token) return;
+		const frame = await persistence.loadFrame(id);
+		if (this.rehydrateToken.get(id) !== token) return;
 
-			if (fileExists && latestGen > 0) {
-				exp.noTapeData = false;
-				if (latestGen !== exp.progress.current) {
-					exp.progress = { current: latestGen, target: exp.progress.target };
-					exp.currentGeneration = latestGen;
-				}
-				await this.seekToGeneration(id, latestGen);
-				if (this.rehydrateToken.get(id) !== token) return;
-				return;
-			}
-
-			// SQLite has no rows for this run — fall back to the on-disk JSONL tape.
-			const jsonl = await persistence.loadFrame(id);
-			if (this.rehydrateToken.get(id) !== token) return;
-			if (jsonl) {
-				const totalCells = jsonl.width * jsonl.height;
-				const grid = new Uint32Array(totalCells);
-				for (let i = 0; i < totalCells; i++) grid[i] = jsonl.grid01[i] ?? 0;
-				exp.currentGrid = grid;
-				exp.currentGeneration = jsonl.generation;
-				exp.currentColorsHex = jsonl.colorsHex;
-				if (jsonl.colorsHex) {
-					const status = new Uint8Array(totalCells);
-					for (let i = 0; i < totalCells; i++) status[i] = jsonl.colorsHex[i] != null ? 1 : 0;
-					exp.currentColorStatus8 = status;
-				} else {
-					exp.currentColorStatus8 = null;
-				}
-				if (jsonl.frameCount !== exp.progress.current) {
-					exp.progress = { current: jsonl.frameCount, target: exp.progress.target };
-				}
-				exp.noTapeData = false;
-				return;
-			}
-
-			console.warn(`[ExperimentManager] No frame data on disk for experiment ${id}.`);
-			// Only blank the canvas if we never loaded anything — don't evict a
-			// previously-loaded frame just because the JSONL fetch returned empty.
-			if (exp.currentGrid === null) {
-				exp.noTapeData = true;
-				exp.currentColorsHex = null;
-				exp.currentColorStatus8 = null;
-			}
-		} catch (err) {
-			console.warn(`[ExperimentManager] Could not read tape for ${id}:`, err);
+		if (!frame) {
+			this.hydration[id] = 'missing';
+			exp.noTapeData = true;
+			return;
 		}
+
+		const totalCells = frame.width * frame.height;
+		const grid = new Uint32Array(totalCells);
+		for (let i = 0; i < totalCells; i++) grid[i] = frame.grid01[i] ?? 0;
+		exp.currentGrid = grid;
+		exp.currentGeneration = frame.generation;
+		exp.currentColorsHex = frame.colorsHex;
+		if (frame.colorsHex) {
+			const status = new Uint8Array(totalCells);
+			for (let i = 0; i < totalCells; i++) status[i] = frame.colorsHex[i] != null ? 1 : 0;
+			exp.currentColorStatus8 = status;
+		} else {
+			exp.currentColorStatus8 = null;
+		}
+		if (frame.frameCount !== exp.progress.current) {
+			exp.progress = { current: frame.frameCount, target: exp.progress.target };
+		}
+		exp.noTapeData = false;
+		this.hydration[id] = 'ready';
 	}
 
 	async seekToGeneration(id: string, generation: number): Promise<void> {
