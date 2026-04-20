@@ -152,10 +152,7 @@
 
 	// Frame buffer state for buffered playback
 	let nlcaFrameBuffer: NlcaFrameBuffer | null = null;
-	let nlcaBufferStatus = $state<BufferStatus | null>(null);
 	let nlcaIsBuffering = $state(false); // True when waiting for min buffer
-	let nlcaBatchRunTarget = $state(0); // Target generations for batch run (0 = disabled)
-	let nlcaBatchRunCompleted = $state(0); // Completed generations in batch run
 	
 	// Computed: buffered frames for timeline display
 	const nlcaBufferedFrames = $derived.by(() => {
@@ -185,10 +182,10 @@
 	function resetNlcaBufferState() {
 		nlcaFrameBuffer?.stopComputing();
 		nlcaFrameBuffer = null;
-		nlcaBufferStatus = null;
+		nlcaStore.bufferStatus = null;
 		nlcaIsBuffering = false;
-		nlcaBatchRunTarget = 0;
-		nlcaBatchRunCompleted = 0;
+		nlcaStore.batchRunTarget = 0;
+		nlcaStore.batchRunCompleted = 0;
 	}
 
 	$effect(() => {
@@ -500,12 +497,12 @@
 				}
 				
 				// Update batch run progress
-				if (nlcaBatchRunTarget > 0) {
-					nlcaBatchRunCompleted++;
+				if (nlcaStore.batchRunTarget > 0) {
+					nlcaStore.batchRunCompleted++;
 				}
 			},
 			onStatusChange: (status: BufferStatus) => {
-				nlcaBufferStatus = status;
+				nlcaStore.bufferStatus = status;
 			}
 		});
 	}
@@ -521,23 +518,23 @@
 		const startGen = simState.generation;
 		const stopAtGeneration = startGen + targetFrames;
 
-		nlcaBatchRunTarget = targetFrames;
-		nlcaBatchRunCompleted = 0;
+		nlcaStore.batchRunTarget = targetFrames;
+		nlcaStore.batchRunCompleted = 0;
 		nlcaLastError = null;
-		
+
 		// Initialize buffer if needed
 		await initNlcaFrameBuffer();
 		if (!nlcaFrameBuffer) return;
-		
+
 		// Keep the playback buffer bounded; batch completion is controlled by stopAtGeneration, not buffer size.
 		const minBuffer = Math.min(5, targetFrames);
 		const targetBuffer = Math.min(Math.max(minBuffer, 10), targetFrames);
 		nlcaFrameBuffer.setBufferSizes(minBuffer, targetBuffer);
-		
+
 		// Start computing
 		nlcaIsBuffering = true;
 		simState.isPlaying = true; // This will start consuming frames
-		
+
 		try {
 			await nlcaFrameBuffer.startComputing({ stopAtGeneration });
 		} catch (err) {
@@ -545,7 +542,7 @@
 		} finally {
 			// Stop playback when the batch run finishes (success or failure).
 			simState.isPlaying = false;
-			nlcaBatchRunTarget = 0;
+			nlcaStore.batchRunTarget = 0;
 		}
 	}
 
@@ -555,8 +552,8 @@
 	export function cancelNlcaBatchRun() {
 		nlcaFrameBuffer?.stopComputing();
 		simState.isPlaying = false;
-		nlcaBatchRunTarget = 0;
-		nlcaBatchRunCompleted = 0;
+		nlcaStore.batchRunTarget = 0;
+		nlcaStore.batchRunCompleted = 0;
 		nlcaIsBuffering = false;
 	}
 
@@ -571,19 +568,6 @@
 		const cellCount = simState.gridWidth * simState.gridHeight;
 		const avgTimePerCell = 50; // ms
 		return (cellCount * avgTimePerCell * generations) / Math.max(1, nlcaMaxConcurrency);
-	}
-
-	/** Expose NLCA buffer status to parent UI (e.g. Batch Run modal). */
-	export function getNlcaBufferStatus(): BufferStatus | null {
-		return nlcaBufferStatus;
-	}
-
-	export function getNlcaBatchRunTarget(): number {
-		return nlcaBatchRunTarget;
-	}
-
-	export function getNlcaBatchRunCompleted(): number {
-		return nlcaBatchRunCompleted;
 	}
 
 	/**
@@ -1176,7 +1160,7 @@
 				const nlcaStepMs = Math.max(stepMs, 3000);
 				const bufferActive =
 					!!nlcaFrameBuffer &&
-					(nlcaFrameBuffer.getBufferedCount() > 0 || nlcaBufferStatus?.isComputing || nlcaBatchRunTarget > 0);
+					(nlcaFrameBuffer.getBufferedCount() > 0 || nlcaStore.bufferStatus?.isComputing || nlcaStore.batchRunTarget > 0);
 
 				if (bufferActive) {
 					if (simAccMs >= nlcaStepMs) {
@@ -1242,7 +1226,7 @@
 		// Hide brush during recording for clean video capture
 		// Also hide brush in NLCA mode (no drawing interaction)
 		const brushEditorOpen = isModalOpen('brushEditor');
-		const showBrush = !nlcaMode && !isRecording && ((mouseInCanvas && effectiveToolMode === 'brush' && !isPanning) || uiState.showBrushPopup || brushEditorOpen);
+		const showBrush = !nlcaMode && !simState.isRecording && ((mouseInCanvas && effectiveToolMode === 'brush' && !isPanning) || uiState.showBrushPopup || brushEditorOpen);
 		// When brush popup/modal is open and mouse not in canvas, show brush at center of grid
 		const brushPopupOrModalOpen = uiState.showBrushPopup || brushEditorOpen;
 		const brushX = brushPopupOrModalOpen && !mouseInCanvas 
@@ -1290,7 +1274,7 @@
 		simulation.render(canvasWidth, canvasHeight);
 
 		// Also render to recording canvas if recording
-		if (isRecording && recordingCanvas) {
+		if (simState.isRecording && recordingCanvas) {
 			simulation.renderToRecordingCanvas();
 		}
 
@@ -2186,17 +2170,12 @@
 	}
 
 	// Video recording state
-	let isRecording = $state(false);
 	let mediaRecorder: MediaRecorder | null = null;
 	let recordedChunks: Blob[] = [];
 	let recordingCanvas: HTMLCanvasElement | null = null;
 
-	export function getIsRecording() {
-		return isRecording;
-	}
-
 	export function toggleRecording() {
-		if (isRecording) {
+		if (simState.isRecording) {
 			stopRecording();
 		} else {
 			startRecording();
@@ -2204,7 +2183,7 @@
 	}
 
 	function startRecording() {
-		if (!canvas || isRecording || !simulation) return;
+		if (!canvas || simState.isRecording || !simulation) return;
 
 		try {
 			// Create offscreen canvas for recording the full grid
@@ -2265,7 +2244,7 @@
 			};
 
 			mediaRecorder.start(100); // Collect data every 100ms
-			isRecording = true;
+			simState.isRecording = true;
 		} catch (err) {
 			console.error('Failed to start recording:', err);
 			if (simulation) {
@@ -2276,9 +2255,9 @@
 	}
 
 	function stopRecording() {
-		if (mediaRecorder && isRecording) {
+		if (mediaRecorder && simState.isRecording) {
 			mediaRecorder.stop();
-			isRecording = false;
+			simState.isRecording = false;
 			mediaRecorder = null;
 			
 			// Restore axis progress after recording
@@ -2458,15 +2437,15 @@
 		{/if}
 
 		<!-- Timeline for frame visualization -->
-		{#if nlcaBatchRunTarget > 0 || nlcaBufferedFrames.length > 0}
+		{#if nlcaStore.batchRunTarget > 0 || nlcaBufferedFrames.length > 0}
 			<div class="nlca-timeline-wrapper">
 				<NlcaTimeline
 					currentGeneration={simState.generation}
 					bufferedFrames={nlcaBufferedFrames}
-					bufferStatus={nlcaBufferStatus}
-					batchRunActive={nlcaBatchRunTarget > 0}
-					batchRunTarget={nlcaBatchRunTarget}
-					batchRunCompleted={nlcaBatchRunCompleted}
+					bufferStatus={nlcaStore.bufferStatus}
+					batchRunActive={nlcaStore.batchRunTarget > 0}
+					batchRunTarget={nlcaStore.batchRunTarget}
+					batchRunCompleted={nlcaStore.batchRunCompleted}
 				/>
 			</div>
 		{/if}

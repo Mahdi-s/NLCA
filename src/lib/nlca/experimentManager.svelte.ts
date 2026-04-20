@@ -130,6 +130,9 @@ export class ExperimentManager {
 	playback = $state<PlaybackState | null>(null);
 	hydration = $state<Record<string, HydrationState>>({});
 	experimentList = $derived(Object.values(this.experiments));
+	bufferStatus = $state<BufferStatus | null>(null);
+	batchRunTarget = $state(0);
+	batchRunCompleted = $state(0);
 	/** Session-only API keys — never persisted to disk. Set by the UI on load and
 	 * whenever settings change; used as fallback when a loaded experiment's
 	 * stored key is blank (keys are intentionally stripped at persist time). */

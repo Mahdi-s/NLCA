@@ -10,6 +10,7 @@ import type { Simulation } from '@games-of-life/webgpu';
 
 // Simulation state
 let isPlaying = $state(true); // Start playing by default
+let isRecording = $state(false);
 let speed = $state(120); // Steps per second (default 120 fps)
 let brushSize = $state(25);
 let brushState = $state(1); // 1 = draw alive, 0 = erase
@@ -321,6 +322,13 @@ export function getSimulationState() {
 		},
 		set isPlaying(value: boolean) {
 			isPlaying = value;
+		},
+
+		get isRecording() {
+			return isRecording;
+		},
+		set isRecording(value: boolean) {
+			isRecording = value;
 		},
 
 		get speed() {

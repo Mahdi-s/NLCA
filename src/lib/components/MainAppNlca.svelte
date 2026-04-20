@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
 	import ControlsNlca from '$lib/components/ControlsNlca.svelte';
 	import Settings from '$lib/components/Settings.svelte';
@@ -21,8 +20,6 @@
 
 	import { getSimulationState, getUIState, type GridScale } from '$lib/stores/simulation.svelte.js';
 	import { getModalStates, toggleModal, closeModal } from '$lib/stores/modalManager.svelte.js';
-	import type { BufferStatus } from '$lib/nlca/frameBuffer.js';
-
 	const simState = getSimulationState();
 	const uiState = getUIState();
 	const nlcaSettings = getNlcaSettingsState();
@@ -37,11 +34,6 @@
 	const showNlcaPrompt = $derived(modalStates.nlcaPrompt.isOpen);
 	const showNlcaPromptViewer = $derived(modalStates.nlcaPromptViewer.isOpen);
 	const showNlcaBatchRun = $derived(modalStates.nlcaBatchRun.isOpen);
-
-	// Batch run state (passed from Canvas)
-	let nlcaBufferStatus = $state<BufferStatus | null>(null);
-	let nlcaBatchRunTarget = $state(0);
-	let nlcaBatchRunCompleted = $state(0);
 
 	// Experiment Manager
 	const experimentManager = getNlcaStore();
@@ -186,19 +178,6 @@
 	function handleScaleChange(scale: GridScale) {
 		canvas.setScale(scale);
 	}
-
-	// Poll recording state from canvas (matches existing MainApp pattern).
-	let isRecording = $state(false);
-	onMount(() => {
-		const interval = setInterval(() => {
-			if (!canvas) return;
-			isRecording = canvas.getIsRecording();
-			nlcaBufferStatus = canvas.getNlcaBufferStatus();
-			nlcaBatchRunTarget = canvas.getNlcaBatchRunTarget();
-			nlcaBatchRunCompleted = canvas.getNlcaBatchRunCompleted();
-		}, 100);
-		return () => clearInterval(interval);
-	});
 
 	function openHelp() {
 		toggleModal('help');
@@ -361,7 +340,7 @@
 		onstep={handleStep}
 		onresetview={handleResetView}
 		onrecord={handleRecord}
-		isRecording={isRecording}
+		isRecording={simState.isRecording}
 		onhelp={openHelp}
 		onabout={openAbout}
 		onnlcasettings={openNlcaSettingsModal}
@@ -421,12 +400,12 @@
 	{/if}
 
 	{#if showNlcaBatchRun}
-		<NlcaBatchRunModal 
+		<NlcaBatchRunModal
 			onclose={() => closeModal('nlcaBatchRun')}
-			bufferStatus={nlcaBufferStatus}
-			batchRunActive={nlcaBatchRunTarget > 0}
-			batchRunTarget={nlcaBatchRunTarget}
-			batchRunCompleted={nlcaBatchRunCompleted}
+			bufferStatus={experimentManager.bufferStatus}
+			batchRunActive={experimentManager.batchRunTarget > 0}
+			batchRunTarget={experimentManager.batchRunTarget}
+			batchRunCompleted={experimentManager.batchRunCompleted}
 			onStartBatchRun={handleStartBatchRun}
 			onCancelBatchRun={handleCancelBatchRun}
 			estimateTime={handleEstimateTime}
