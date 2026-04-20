@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import { initWebGPU, type WebGPUContext, type WebGPUError } from '@games-of-life/webgpu';
 	import { Simulation } from '@games-of-life/webgpu';
 	import { getSimulationState, getUIState, GRID_SCALES, type GridScale, type SpectrumMode, type BrushShape, setSimulationRef, wasBrushEditorSnapshotTaken, markBrushEditorSnapshotTaken, markBrushEditorEdited } from '../stores/simulation.svelte.js';
@@ -2447,6 +2448,10 @@
 		class:pan-ready={effectiveToolMode === 'pan' && !isPanning}
 	></canvas>
 
+	{#if nlcaMode && nlcaStore.active && nlcaStore.hydration[nlcaStore.active.id] === 'loading'}
+		<div class="canvas-skeleton" transition:fade={{ duration: 150 }}></div>
+	{/if}
+
 	{#if nlcaMode && !error}
 		{#if nlcaBenchmarkSummary}
 			<div class="nlca-benchmark-result">{nlcaBenchmarkSummary}</div>
@@ -2719,6 +2724,29 @@
 		text-align: center;
 		padding: 20px;
 		font-size: 0.8rem;
+	}
+
+	.canvas-skeleton {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			90deg,
+			transparent 0%,
+			rgba(255, 255, 255, 0.04) 50%,
+			transparent 100%
+		);
+		background-size: 200% 100%;
+		animation: canvas-shimmer 1.2s linear infinite;
+	}
+
+	@keyframes canvas-shimmer {
+		0%   { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.canvas-skeleton { animation: none; }
 	}
 
 </style>
