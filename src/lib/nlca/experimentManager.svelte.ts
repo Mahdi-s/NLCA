@@ -674,7 +674,7 @@ export class ExperimentManager {
 		}
 
 		delete this.experiments[id];
-		void persistence.deleteExperiment(id);
+		await persistence.deleteExperiment(id);
 
 		if (this.activeId === id) {
 			const remaining = Object.keys(this.experiments);

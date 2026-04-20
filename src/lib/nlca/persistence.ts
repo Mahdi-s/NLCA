@@ -37,12 +37,11 @@ export interface LoadedFrame {
 }
 
 const index = new ExperimentIndex();
-let indexInitialized = false;
+let initPromise: Promise<void> | null = null;
 
 async function ensureIndex(): Promise<void> {
-    if (indexInitialized) return;
-    await index.init();
-    indexInitialized = true;
+    if (!initPromise) initPromise = index.init();
+    await initPromise;
 }
 
 function parseCsvRow(row: Record<string, string>): LoadedMeta | null {
@@ -149,6 +148,8 @@ export async function loadFrame(id: string, generation?: number): Promise<Loaded
 }
 
 export async function syncMeta(exp: Experiment, extra?: { errorMessage?: string }): Promise<void> {
+    const errorMessage = extra?.errorMessage ?? exp.errorMessage ?? null;
+
     // Fire-and-forget CSV write.
     try {
         await fetch('/api/nlca-runs-csv', {
@@ -178,7 +179,7 @@ export async function syncMeta(exp: Experiment, extra?: { errorMessage?: string 
                 createdAt: exp.createdAt,
                 updatedAt: Date.now(),
                 dbFilename: exp.dbFilename,
-                errorMessage: extra?.errorMessage ?? exp.errorMessage ?? ''
+                errorMessage: errorMessage ?? ''
             })
         });
     } catch (err) {
@@ -200,7 +201,7 @@ export async function syncMeta(exp: Experiment, extra?: { errorMessage?: string 
                     createdAt: exp.createdAt,
                     updatedAt: Date.now(),
                     dbFilename: exp.dbFilename,
-                    errorMessage: exp.errorMessage ?? null,
+                    errorMessage: errorMessage,
                     config: redactExperimentConfigForPersistence(exp.config)
                 }
             })
@@ -216,7 +217,7 @@ export async function syncMeta(exp: Experiment, extra?: { errorMessage?: string 
             exp.id,
             exp.status,
             exp.progress.current,
-            extra?.errorMessage ?? exp.errorMessage,
+            errorMessage ?? undefined,
             exp.totalCost
         );
     } catch (err) {
@@ -255,13 +256,19 @@ export async function deleteExperiment(id: string): Promise<void> {
     try {
         await ensureIndex();
         await index.delete(id);
-    } catch { /* ignore */ }
+    } catch (err) {
+        if (typeof window !== 'undefined') console.debug('[persistence] SQLite delete skipped:', err);
+    }
     try {
         await fetch(`/api/nlca-runs-csv?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch { /* ignore */ }
+    } catch (err) {
+        if (typeof window !== 'undefined') console.debug('[persistence] CSV delete skipped:', err);
+    }
     try {
         await fetch(`/api/nlca-frames-jsonl?runId=${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch { /* ignore */ }
+    } catch (err) {
+        if (typeof window !== 'undefined') console.debug('[persistence] JSONL delete skipped:', err);
+    }
 }
 
 export function newTape(dbFilename: string): NlcaTape {
