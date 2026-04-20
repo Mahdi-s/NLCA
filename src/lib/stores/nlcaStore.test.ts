@@ -113,3 +113,62 @@ describe('nlcaStore hydration', () => {
         expect(store.hydration['a']).not.toBe('ready');
     });
 });
+
+describe('nlcaStore LRU cache', () => {
+    beforeEach(() => {
+        __resetNlcaStoreForTests();
+    });
+
+    test('evicts oldest non-pinned experiment when budget exceeded', () => {
+        const store = getNlcaStore();
+        const mkExp = (id: string) => ({
+            id, label: id, config: { gridWidth: 5, gridHeight: 5 } as never,
+            status: 'paused' as const, stepper: null, tape: null as never, frameBuffer: null,
+            agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
+            dbFilename: `/${id}.sqlite3`, currentGrid: new Uint32Array(25),
+            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1,
+            bufferStatus: null, totalCost: 0, estimatedCost: 0, pricingUnknown: true,
+            totalCalls: 0, lastLatencyMs: null
+        });
+
+        for (let i = 1; i <= 7; i++) {
+            store.experiments[`e${i}`] = mkExp(`e${i}`);
+        }
+
+        for (let i = 1; i <= 7; i++) {
+            store.setActive(`e${i}`);
+        }
+
+        // Active = e7, budget = 5 evictable. e1..e6 all have currentGrid, but only 5 can stay.
+        // Oldest-accessed (e1) is evicted.
+        expect(store.experiments['e7'].currentGrid).not.toBeNull();
+        const evictedCount = [1, 2, 3, 4, 5, 6].filter(
+            (i) => store.experiments[`e${i}`].currentGrid === null
+        ).length;
+        expect(evictedCount).toBe(1);
+        expect(store.experiments['e1'].currentGrid).toBeNull();
+    });
+
+    test('never evicts running experiments even if past budget', () => {
+        const store = getNlcaStore();
+        const mkRunning = (id: string) => ({
+            id, label: id, config: { gridWidth: 5, gridHeight: 5 } as never,
+            status: 'running' as const, stepper: null, tape: null as never, frameBuffer: null,
+            agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
+            dbFilename: `/${id}.sqlite3`, currentGrid: new Uint32Array(25),
+            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1,
+            bufferStatus: null, totalCost: 0, estimatedCost: 0, pricingUnknown: true,
+            totalCalls: 0, lastLatencyMs: null
+        });
+
+        for (let i = 1; i <= 8; i++) {
+            store.experiments[`r${i}`] = mkRunning(`r${i}`);
+            store.setActive(`r${i}`);
+        }
+
+        // All running → all pinned → none evicted.
+        for (let i = 1; i <= 8; i++) {
+            expect(store.experiments[`r${i}`].currentGrid).not.toBeNull();
+        }
+    });
+});

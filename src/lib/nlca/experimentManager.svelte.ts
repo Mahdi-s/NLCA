@@ -140,6 +140,9 @@ export class ExperimentManager {
 	/** Per-experiment generation counter used to void stale async rehydrates when
 	 * the user switches active experiments faster than disk reads complete. */
 	private rehydrateToken = new Map<string, number>();
+	private lastAccessedAt = new Map<string, number>();
+	private lruClock = 0;
+	private static readonly LRU_BUDGET = 5;
 	/** Token bumped on every startPlayback/stopPlayback so in-flight loops can
 	 * detect they've been superseded and bail out cleanly. */
 	private playbackToken = 0;
@@ -698,12 +701,14 @@ export class ExperimentManager {
 		}
 
 		this.activeId = id;
+		this.lastAccessedAt.set(id, ++this.lruClock);
 		const exp = this.experiments[id];
 		if (!exp) return;
 
 		// Fast path: grid already in memory (running, cached, or recently loaded).
 		if (exp.currentGrid) {
 			this.hydration[id] = 'ready';
+			this.enforceLruBudget();
 			return;
 		}
 
@@ -717,11 +722,36 @@ export class ExperimentManager {
 		this.hydration[id] = 'loading';
 		const token = (this.rehydrateToken.get(id) ?? 0) + 1;
 		this.rehydrateToken.set(id, token);
-		void this.hydrateFromDisk(id, token).catch((err) => {
-			if (this.rehydrateToken.get(id) !== token) return;
-			this.hydration[id] = 'missing';
-			console.warn(`[ExperimentManager] Failed to rehydrate grid for ${id}:`, err);
-		});
+		void this.hydrateFromDisk(id, token)
+			.then(() => this.enforceLruBudget())
+			.catch((err) => {
+				if (this.rehydrateToken.get(id) !== token) return;
+				this.hydration[id] = 'missing';
+				console.warn(`[ExperimentManager] Failed to rehydrate grid for ${id}:`, err);
+			});
+	}
+
+	private enforceLruBudget(): void {
+		const evictable = Object.values(this.experiments)
+			.filter(
+				(e) =>
+					e.currentGrid != null &&
+					e.id !== this.activeId &&
+					e.status !== 'running' &&
+					this.lastAccessedAt.has(e.id)
+			)
+			.sort(
+				(a, b) =>
+					(this.lastAccessedAt.get(a.id) ?? 0) - (this.lastAccessedAt.get(b.id) ?? 0)
+			);
+		while (evictable.length > ExperimentManager.LRU_BUDGET) {
+			const victim = evictable.shift();
+			if (!victim) break;
+			victim.currentGrid = null;
+			victim.currentColorsHex = null;
+			victim.currentColorStatus8 = null;
+			this.hydration[victim.id] = 'idle';
+		}
 	}
 
 	private async hydrateFromDisk(id: string, token: number): Promise<void> {
