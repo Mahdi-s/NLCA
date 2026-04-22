@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { resolveLocalPath } from './resolvePath.js';
 import { rejectIfForbiddenSql } from './sqlAllowlist.js';
+import { isIdempotentMigrationError } from './idempotentMigration.js';
 
 // Keep DB connections open for the lifetime of the dev server process.
 const dbs = new Map<string, Database.Database>();
@@ -108,7 +109,18 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	} catch (e) {
 		if (e && typeof e === 'object' && 'status' in e) throw e;
+		const msg = String(e);
+		// Benign idempotent migration retries — ADD COLUMN for a column that
+		// already exists, CREATE TABLE/INDEX without IF NOT EXISTS — are the
+		// expected outcome on second and later boots. Return 200 so the server
+		// log and browser devtools stay quiet; the client's effect (column
+		// exists) is already in place.
+		if (isIdempotentMigrationError(msg)) {
+			return new Response(JSON.stringify({ skipped: 'already-applied' }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
 		console.error('[nlca-db]', op, dbPath, e);
-		throw error(500, String(e));
+		throw error(500, msg);
 	}
 };
