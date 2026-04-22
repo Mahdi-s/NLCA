@@ -42,6 +42,12 @@ export interface Experiment {
 	currentColorsHex: Array<string | null> | null;
 	currentColorStatus8: Uint8Array | null;
 	currentGeneration: number;
+	/** Grid shown in the viewport — may be behind currentGrid when user has scrubbed back. */
+	viewGrid: Uint32Array | null;
+	/** Generation number the user is currently viewing. */
+	viewGeneration: number;
+	/** When true, viewport follows the compute head on each new frame. */
+	autoFollow: boolean;
 	bufferStatus: BufferStatus | null;
 	totalCost: number;
 	/** Full-run projection in USD — what we expect this experiment to cost at
@@ -200,6 +206,9 @@ export class ExperimentManager {
 				currentColorsHex: null,
 				currentColorStatus8: null,
 				currentGeneration: 0,
+				viewGrid: null,
+				viewGeneration: 0,
+				autoFollow: true,
 				bufferStatus: null,
 				totalCost: meta.totalCost,
 				estimatedCost: 0,
@@ -238,6 +247,9 @@ export class ExperimentManager {
 			currentColorsHex: null,
 			currentColorStatus8: null,
 			currentGeneration: 0,
+			viewGrid: null,
+			viewGeneration: 0,
+			autoFollow: true,
 			bufferStatus: null,
 			totalCost: 0,
 			estimatedCost: 0,
@@ -608,6 +620,9 @@ export class ExperimentManager {
 		exp.currentGrid = restoredGrid;
 		exp.currentColorsHex = latestFrame.colorsHex;
 		exp.currentGeneration = latestFrame.generation;
+		exp.viewGrid = restoredGrid;
+		exp.viewGeneration = latestFrame.generation;
+		exp.autoFollow = true;
 		exp.progress = { current: latestFrame.generation, target: exp.progress.target };
 		if (latestFrame.colorsHex) {
 			const cs = new Uint8Array(totalCells);

@@ -28,6 +28,9 @@ describe('nlcaStore hydration', () => {
             currentColorsHex: null,
             currentColorStatus8: null,
             currentGeneration: 1,
+            viewGrid: null,
+            viewGeneration: 0,
+            autoFollow: true,
             bufferStatus: null,
             totalCost: 0,
             estimatedCost: 0,
@@ -61,6 +64,9 @@ describe('nlcaStore hydration', () => {
             currentColorsHex: null,
             currentColorStatus8: null,
             currentGeneration: 0,
+            viewGrid: null,
+            viewGeneration: 0,
+            autoFollow: true,
             bufferStatus: null,
             totalCost: 0,
             estimatedCost: 0,
@@ -90,7 +96,7 @@ describe('nlcaStore hydration', () => {
             status: 'paused' as const, stepper: null, tape: null as never, frameBuffer: null,
             agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
             dbFilename: '/x.sqlite3', currentGrid: null, currentColorsHex: null,
-            currentColorStatus8: null, currentGeneration: 0, bufferStatus: null,
+            currentColorStatus8: null, currentGeneration: 0, viewGrid: null, viewGeneration: 0, autoFollow: true, bufferStatus: null,
             totalCost: 0, estimatedCost: 0, pricingUnknown: true, totalCalls: 0,
             lastLatencyMs: null
         });
@@ -126,7 +132,7 @@ describe('nlcaStore LRU cache', () => {
             status: 'paused' as const, stepper: null, tape: null as never, frameBuffer: null,
             agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
             dbFilename: `/${id}.sqlite3`, currentGrid: new Uint32Array(25),
-            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1,
+            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1, viewGrid: null, viewGeneration: 0, autoFollow: true,
             bufferStatus: null, totalCost: 0, estimatedCost: 0, pricingUnknown: true,
             totalCalls: 0, lastLatencyMs: null
         });
@@ -156,7 +162,7 @@ describe('nlcaStore LRU cache', () => {
             status: 'running' as const, stepper: null, tape: null as never, frameBuffer: null,
             agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
             dbFilename: `/${id}.sqlite3`, currentGrid: new Uint32Array(25),
-            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1,
+            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1, viewGrid: null, viewGeneration: 0, autoFollow: true,
             bufferStatus: null, totalCost: 0, estimatedCost: 0, pricingUnknown: true,
             totalCalls: 0, lastLatencyMs: null
         });
