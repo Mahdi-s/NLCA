@@ -2427,7 +2427,7 @@
 		class:pan-ready={effectiveToolMode === 'pan' && !isPanning}
 	></canvas>
 
-	{#if nlcaMode && nlcaStore.active && nlcaStore.hydration[nlcaStore.active.id] === 'loading'}
+	{#if nlcaMode && nlcaStore.active && nlcaStore.hydration[nlcaStore.active.id] === 'loading' && !nlcaStore.active.currentGrid}
 		<div class="canvas-skeleton" transition:fade={{ duration: 150 }}></div>
 	{/if}
 
