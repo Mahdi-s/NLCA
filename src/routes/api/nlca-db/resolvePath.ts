@@ -4,7 +4,13 @@ export const EXPERIMENTS_DIR = resolve(process.cwd(), 'experiments');
 
 /** Experiment SQLite filenames follow this shape. */
 const EXPERIMENT_FILE_RE = /^nlca-\d+-(.+)-\d+x\d+\.sqlite3$/;
-const INDEX_FILENAME = 'nlca-index.sqlite3';
+/**
+ * Non-experiment SQLite files that live directly under `experiments/` (no
+ * per-model subdir). `nlca-index.sqlite3` is the master index; `nlca.sqlite3`
+ * is the legacy standalone tape the Canvas falls back to before a per-run
+ * tape is assigned.
+ */
+const ROOT_DB_FILENAMES = new Set(['nlca-index.sqlite3', 'nlca.sqlite3']);
 
 /**
  * Resolve a client-supplied virtual DB path to a safe on-disk location.
@@ -28,7 +34,7 @@ export function resolveLocalPath(dbPath: string): string {
 	}
 
 	let target: string;
-	if (safeName === INDEX_FILENAME) {
+	if (ROOT_DB_FILENAMES.has(safeName)) {
 		target = join(EXPERIMENTS_DIR, safeName);
 	} else {
 		const match = safeName.match(EXPERIMENT_FILE_RE);

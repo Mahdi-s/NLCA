@@ -12,6 +12,14 @@ describe('resolveLocalPath — safe filename handling', () => {
 		const out = resolveLocalPath('/nlca-index.sqlite3');
 		expect(out).toBe(join(EXPERIMENTS_DIR, 'nlca-index.sqlite3'));
 	});
+
+	test('resolves the default standalone tape (/nlca.sqlite3) under experiments/', () => {
+		// Canvas.svelte constructs an NlcaTape with no args, defaulting to
+		// /nlca.sqlite3 — the legacy standalone tape used before per-experiment
+		// tapes landed. Has to keep working so WebGPU initialization doesn't break.
+		const out = resolveLocalPath('/nlca.sqlite3');
+		expect(out).toBe(join(EXPERIMENTS_DIR, 'nlca.sqlite3'));
+	});
 });
 
 describe('resolveLocalPath — path traversal is blocked', () => {
