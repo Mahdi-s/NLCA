@@ -345,6 +345,18 @@ export class ExperimentManager {
 					exp.currentGeneration = generation;
 					exp.progress = { current: generation, target: exp.progress.target };
 
+					// Clear loading skeleton when first frame lands — setActive() may have set
+					// hydration='loading' before the compute loop produced a grid.
+					if (this.hydration[id] === 'loading') {
+						this.hydration[id] = 'ready';
+					}
+
+					// Advance view cursor to latest frame when user hasn't manually scrubbed.
+					if (exp.autoFollow) {
+						exp.viewGrid = result.next;
+						exp.viewGeneration = generation;
+					}
+
 					if (exp.stepper) {
 						const stats = exp.stepper.getCostStats();
 						exp.totalCost = stats.totalCost;
@@ -512,6 +524,8 @@ export class ExperimentManager {
 			exp.currentGrid = nextGrid;
 			exp.currentGeneration = gen;
 			exp.currentColorsHex = frame.colorsHex;
+			exp.viewGrid = nextGrid;
+			exp.viewGeneration = gen;
 			if (frame.colorsHex) {
 				const status = new Uint8Array(totalCells);
 				for (let i = 0; i < totalCells; i++) status[i] = frame.colorsHex[i] != null ? 1 : 0;
@@ -793,6 +807,10 @@ export class ExperimentManager {
 		exp.currentGrid = grid;
 		exp.currentGeneration = frame.generation;
 		exp.currentColorsHex = frame.colorsHex;
+		if (exp.autoFollow) {
+			exp.viewGrid = grid;
+			exp.viewGeneration = frame.generation;
+		}
 		if (frame.colorsHex) {
 			const status = new Uint8Array(totalCells);
 			for (let i = 0; i < totalCells; i++) status[i] = frame.colorsHex[i] != null ? 1 : 0;
@@ -853,5 +871,36 @@ export class ExperimentManager {
 		} else {
 			exp.currentColorStatus8 = null;
 		}
+	}
+
+	/**
+	 * Seek the viewport to a specific generation without pausing the compute loop.
+	 * Sets autoFollow=false so the compute head advancing doesn't snap the view.
+	 */
+	async setViewGeneration(id: string, generation: number): Promise<void> {
+		const exp = this.experiments[id];
+		if (!exp) return;
+
+		// Clamp to available range.
+		const target = Math.max(1, Math.min(exp.progress.current, generation));
+		exp.autoFollow = false;
+
+		await this.seekToGeneration(id, target);
+
+		// After seekToGeneration populates currentGrid/currentGeneration,
+		// copy them into the view cursor so Canvas reads the seeked frame.
+		exp.viewGrid = exp.currentGrid;
+		exp.viewGeneration = exp.currentGeneration;
+	}
+
+	/**
+	 * Resume following the compute head. Immediately snaps viewport to latest frame.
+	 */
+	followLive(id: string): void {
+		const exp = this.experiments[id];
+		if (!exp) return;
+		exp.autoFollow = true;
+		exp.viewGrid = exp.currentGrid;
+		exp.viewGeneration = exp.currentGeneration;
 	}
 }
