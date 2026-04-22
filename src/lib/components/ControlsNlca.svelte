@@ -35,6 +35,7 @@
 		onseeknext?: () => void;
 		onexperiments?: () => void;
 		showExperimentPanel?: boolean;
+		onfollowlive?: () => void;
 	}
 
 	let {
@@ -64,7 +65,8 @@
 		onseekprev,
 		onseeknext,
 		onexperiments,
-		showExperimentPanel = false
+		showExperimentPanel = false,
+		onfollowlive
 	}: Props = $props();
 
 	const simState = getSimulationState();
@@ -171,7 +173,7 @@
 	{#if activeExperiment && onseek}
 		<div class="scrubber-row">
 			<NlcaFrameScrubber
-				current={activeExperiment.currentGeneration}
+				current={activeExperiment.viewGeneration ?? activeExperiment.currentGeneration}
 				stored={activeExperiment.progress.current}
 				target={activeExperiment.progress.target}
 				onSeek={onseek}
@@ -206,7 +208,7 @@
 			<button
 				class="control-btn"
 				onclick={onseekprev}
-				disabled={experimentStatus === 'running' || !activeExperiment || activeExperiment.currentGeneration <= 1}
+				disabled={!activeExperiment || (activeExperiment.viewGeneration ?? activeExperiment.currentGeneration) <= 1}
 				data-tooltip="Previous Frame"
 				aria-label="Previous Frame"
 			>
@@ -218,7 +220,7 @@
 			<button
 				class="control-btn"
 				onclick={onseeknext}
-				disabled={experimentStatus === 'running' || !activeExperiment || activeExperiment.currentGeneration >= activeExperiment.progress.current}
+				disabled={!activeExperiment || (activeExperiment.viewGeneration ?? activeExperiment.currentGeneration) >= activeExperiment.progress.current}
 				data-tooltip="Next Frame"
 				aria-label="Next Frame"
 			>
@@ -226,6 +228,20 @@
 					<path d="M6 18l8.5-6L6 6v12zm2-8.14L11.03 12 8 14.14V9.86zM16 6h2v12h-2V6z" />
 				</svg>
 			</button>
+
+			{#if experimentStatus === 'running' && activeExperiment && !activeExperiment.autoFollow}
+				<button
+					class="control-btn live-btn"
+					onclick={onfollowlive}
+					data-tooltip="Jump to Live"
+					aria-label="Jump to Live"
+				>
+					<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1">
+						<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>
+						<path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+					</svg>
+				</button>
+			{/if}
 		{:else}
 			<button class="control-btn primary" onclick={() => simState.togglePlay()} data-tooltip={simState.isPlaying ? 'Pause (Enter)' : 'Play (Enter)'}>
 				{#if simState.isPlaying}
@@ -438,6 +454,17 @@
 		background: var(--ui-accent);
 		color: #000;
 		border-color: transparent;
+	}
+
+	.control-btn.live-btn {
+		background: rgba(255, 80, 80, 0.15);
+		border-color: rgba(255, 80, 80, 0.4);
+		animation: live-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes live-pulse {
+		0%, 100% { border-color: rgba(255, 80, 80, 0.4); }
+		50% { border-color: rgba(255, 80, 80, 0.8); }
 	}
 
 	.control-btn svg {

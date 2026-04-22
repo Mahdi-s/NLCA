@@ -345,6 +345,18 @@ export class ExperimentManager {
 					exp.currentGeneration = generation;
 					exp.progress = { current: generation, target: exp.progress.target };
 
+					// Clear loading skeleton when first frame lands — setActive() may have set
+					// hydration='loading' before the compute loop produced a grid.
+					if (this.hydration[id] === 'loading') {
+						this.hydration[id] = 'ready';
+					}
+
+					// Advance view cursor to latest frame when user hasn't manually scrubbed.
+					if (exp.autoFollow) {
+						exp.viewGrid = result.next;
+						exp.viewGeneration = generation;
+					}
+
 					if (exp.stepper) {
 						const stats = exp.stepper.getCostStats();
 						exp.totalCost = stats.totalCost;
@@ -512,6 +524,8 @@ export class ExperimentManager {
 			exp.currentGrid = nextGrid;
 			exp.currentGeneration = gen;
 			exp.currentColorsHex = frame.colorsHex;
+			exp.viewGrid = nextGrid;
+			exp.viewGeneration = gen;
 			if (frame.colorsHex) {
 				const status = new Uint8Array(totalCells);
 				for (let i = 0; i < totalCells; i++) status[i] = frame.colorsHex[i] != null ? 1 : 0;
@@ -793,6 +807,10 @@ export class ExperimentManager {
 		exp.currentGrid = grid;
 		exp.currentGeneration = frame.generation;
 		exp.currentColorsHex = frame.colorsHex;
+		if (exp.autoFollow) {
+			exp.viewGrid = grid;
+			exp.viewGeneration = frame.generation;
+		}
 		if (frame.colorsHex) {
 			const status = new Uint8Array(totalCells);
 			for (let i = 0; i < totalCells; i++) status[i] = frame.colorsHex[i] != null ? 1 : 0;
@@ -853,5 +871,67 @@ export class ExperimentManager {
 		} else {
 			exp.currentColorStatus8 = null;
 		}
+	}
+
+	/**
+	 * Seek the viewport to a specific generation without pausing the compute loop.
+	 * Sets autoFollow=false so the compute head advancing doesn't snap the view.
+	 * Writes directly to viewGrid/viewGeneration, bypassing currentGrid entirely,
+	 * so the background compute loop cannot race and overwrite the seeked frame.
+	 */
+	async setViewGeneration(id: string, generation: number): Promise<void> {
+		const exp = this.experiments[id];
+		if (!exp || exp.progress.current === 0) return;
+
+		const target = Math.max(1, Math.min(exp.progress.current, generation));
+		exp.autoFollow = false;
+
+		const totalCells = exp.config.gridWidth * exp.config.gridHeight;
+
+		// Try SQLite first (in-browser in-memory tape).
+		const sqliteFrame = await exp.tape.getFrame(id, target);
+		if (sqliteFrame) {
+			exp.viewGrid = unpackBitsetTo01(sqliteFrame.stateBits, totalCells);
+			exp.viewGeneration = target;
+			exp.currentColorsHex = sqliteFrame.colorsHex ?? null;
+			if (sqliteFrame.colorsHex) {
+				const status = new Uint8Array(totalCells);
+				for (let i = 0; i < totalCells; i++) status[i] = sqliteFrame.colorsHex[i] != null ? 1 : 0;
+				exp.currentColorStatus8 = status;
+			} else {
+				exp.currentColorStatus8 = null;
+			}
+			return;
+		}
+
+		// SQLite miss — fall back to JSONL tape on disk.
+		const jsonl = await persistence.loadFrame(id, target);
+		if (!jsonl) {
+			console.warn(`[ExperimentManager] Frame ${target} not found for experiment ${id}`);
+			return;
+		}
+		const grid = new Uint32Array(totalCells);
+		for (let i = 0; i < totalCells; i++) grid[i] = jsonl.grid01[i] ?? 0;
+		exp.viewGrid = grid;
+		exp.viewGeneration = target;
+		exp.currentColorsHex = jsonl.colorsHex;
+		if (jsonl.colorsHex) {
+			const status = new Uint8Array(totalCells);
+			for (let i = 0; i < totalCells; i++) status[i] = jsonl.colorsHex[i] != null ? 1 : 0;
+			exp.currentColorStatus8 = status;
+		} else {
+			exp.currentColorStatus8 = null;
+		}
+	}
+
+	/**
+	 * Resume following the compute head. Immediately snaps viewport to latest frame.
+	 */
+	followLive(id: string): void {
+		const exp = this.experiments[id];
+		if (!exp) return;
+		exp.autoFollow = true;
+		exp.viewGrid = exp.currentGrid;
+		exp.viewGeneration = exp.currentGeneration;
 	}
 }

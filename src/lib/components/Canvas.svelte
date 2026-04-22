@@ -288,9 +288,13 @@
 		if (!simulation || !ctx) return;
 		if (nlcaStore.playback) return; // playback loop drives canvas directly
 		const active = nlcaStore.active;
-		if (!active || !active.currentGrid) return;
+		if (!active) return;
 
-		simulation.setCellData(active.currentGrid);
+		// Render from view cursor when user has scrubbed back; fall back to compute head.
+		const displayGrid = active.viewGrid ?? active.currentGrid;
+		if (!displayGrid) return;
+
+		simulation.setCellData(displayGrid);
 
 		if (nlcaUseCellColors && active.currentColorsHex && active.currentColorStatus8) {
 			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== active.currentGrid.length) {
@@ -2427,7 +2431,7 @@
 		class:pan-ready={effectiveToolMode === 'pan' && !isPanning}
 	></canvas>
 
-	{#if nlcaMode && nlcaStore.active && nlcaStore.hydration[nlcaStore.active.id] === 'loading'}
+	{#if nlcaMode && nlcaStore.active && nlcaStore.hydration[nlcaStore.active.id] === 'loading' && !nlcaStore.active.currentGrid}
 		<div class="canvas-skeleton" transition:fade={{ duration: 150 }}></div>
 	{/if}
 
