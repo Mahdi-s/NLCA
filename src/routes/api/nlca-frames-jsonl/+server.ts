@@ -3,6 +3,11 @@ import { dev } from '$app/environment';
 import { mkdirSync, existsSync, writeFileSync, appendFileSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { redactExperimentConfigForPersistence, type ExperimentConfig } from '$lib/nlca/types.js';
+import {
+	findLatestJsonlFrame,
+	findJsonlFrameByGeneration,
+	countJsonlLines
+} from './jsonlReader.js';
 
 /**
  * Dev-only, file-system-backed JSONL tape.
@@ -98,37 +103,30 @@ export const GET: RequestHandler = async ({ url }) => {
 	const framesPath = join(dir, 'frames.jsonl');
 	if (!existsSync(framesPath)) return json({ ...empty, meta });
 
-	const text = readFileSync(framesPath, 'utf8');
-	const lines = text.split('\n').filter((l) => l.trim().length > 0);
-	if (lines.length === 0) return json({ ...empty, meta });
+	// Stream the file instead of loading it wholesale. `latest` needs only the
+	// tail of the file; `frame` scans linearly with readline. Keeps server
+	// memory flat as tapes grow into multi-MB territory.
+	const latestRecord = (await findLatestJsonlFrame(framesPath)) as FrameRecord | null;
+	const latest = latestRecord ? expandFrame(latestRecord) : null;
 
 	const requested = url.searchParams.get('generation');
 	const wantedGen = requested !== null ? Number(requested) : null;
-
-	let latest: ExpandedFrame | null = null;
 	let match: ExpandedFrame | null = null;
-
-	// Walk lines newest-first so `latest` is the last valid record. If a
-	// specific generation was requested, record the first matching line.
-	for (let i = lines.length - 1; i >= 0; i--) {
-		let frame: FrameRecord;
-		try {
-			frame = JSON.parse(lines[i]) as FrameRecord;
-		} catch {
-			continue;
-		}
-		if (!latest) latest = expandFrame(frame);
-		if (wantedGen !== null && frame.generation === wantedGen && !match) {
-			match = expandFrame(frame);
-		}
-		if (latest && (wantedGen === null || match)) break;
+	if (wantedGen !== null && Number.isFinite(wantedGen)) {
+		const matchRecord = (await findJsonlFrameByGeneration(
+			framesPath,
+			wantedGen
+		)) as FrameRecord | null;
+		if (matchRecord) match = expandFrame(matchRecord);
 	}
+
+	const frameCount = await countJsonlLines(framesPath);
 
 	return json({
 		meta,
 		latest,
 		frame: match,
-		frameCount: lines.length
+		frameCount
 	});
 };
 

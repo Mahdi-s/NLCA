@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
+	import { experimentDisplayName } from '$lib/nlca/experimentDisplayName.js';
 
 	interface Props {
 		experiment: Experiment | null;
@@ -7,6 +8,8 @@
 	}
 
 	let { experiment, onViewPrompt }: Props = $props();
+
+	const displayName = $derived(experiment ? experimentDisplayName(experiment) : '');
 
 	function statusLabel(status: Experiment['status']): string {
 		switch (status) {
@@ -33,7 +36,7 @@
 	<div class="top-row">
 		<span class="pill">NLCA</span>
 		{#if experiment}
-			<span class="label" title={experiment.label}>{experiment.label}</span>
+			<span class="label" title={displayName}>{displayName}</span>
 			<span class="status" style="color: {statusColor(experiment.status)}">● {statusLabel(experiment.status)}</span>
 		{:else}
 			<span class="muted">No experiment — press Play to start</span>

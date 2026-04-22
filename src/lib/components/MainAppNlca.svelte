@@ -104,6 +104,7 @@
 			cellTimeoutMs: sambaMode ? 120_000 : 30_000,
 			compressPayload: sambaMode ? true : false,
 			deduplicateRequests: sambaMode ? true : false,
+			sparseContextMode: nlcaSettings.sparseContextMode,
 			targetFrames: nlcaSettings.targetFrames
 		};
 	}

@@ -2,6 +2,7 @@
 	import { draggable } from '$lib/utils/draggable.js';
 	import { bringToFront, setModalPosition, getModalState } from '$lib/stores/modalManager.svelte.js';
 	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
+	import { experimentDisplayName } from '$lib/nlca/experimentDisplayName.js';
 
 	interface Props {
 		experiment: Experiment | null;
@@ -10,6 +11,7 @@
 
 	let { experiment, onclose }: Props = $props();
 	const modalState = $derived(getModalState('nlcaPromptViewer'));
+	const displayName = $derived(experiment ? experimentDisplayName(experiment) : '');
 
 	function handleModalClick() {
 		bringToFront('nlcaPromptViewer');
@@ -31,7 +33,7 @@
 		style={modalState.position ? `transform: translate(${modalState.position.x}px, ${modalState.position.y}px);` : ''}
 	>
 		<div class="header">
-			<h3>Experiment Prompt {experiment ? `— ${experiment.label}` : ''}</h3>
+			<h3>Experiment Prompt {experiment ? `— ${displayName}` : ''}</h3>
 			<button class="close" onclick={onclose} aria-label="Close">×</button>
 		</div>
 

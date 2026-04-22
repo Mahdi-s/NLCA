@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Experiment } from '$lib/nlca/experimentManager.svelte.js';
 	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
-	import { getPresetById } from '$lib/stores/nlcaPrompt.svelte.js';
+	import { experimentDisplayName } from '$lib/nlca/experimentDisplayName.js';
 	import type { NlcaNeighborhood } from '$lib/nlca/types.js';
 
 	interface Props {
@@ -91,11 +91,6 @@
 		return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	}
 
-	function presetName(id: string | undefined): string | null {
-		if (!id) return null;
-		return getPresetById(id)?.name ?? null;
-	}
-
 	function shortModel(model: string): string {
 		return model.split('/').pop() ?? model;
 	}
@@ -112,11 +107,7 @@
 	}
 
 	function cardTitle(exp: Experiment): string {
-		const p = presetName(exp.config.promptPresetId);
-		if (p) return p;
-		const task = exp.config.taskDescription?.trim() ?? '';
-		if (task.length === 0) return `Exp ${exp.id.slice(0, 6)}`;
-		return task.length > 36 ? task.slice(0, 33) + '…' : task;
+		return experimentDisplayName(exp);
 	}
 </script>
 

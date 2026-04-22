@@ -3,32 +3,22 @@ import { dev } from '$app/environment';
 import type { RequestHandler } from './$types';
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
+import { resolveLocalPath } from './resolvePath.js';
+import { rejectIfForbiddenSql } from './sqlAllowlist.js';
 
 // Keep DB connections open for the lifetime of the dev server process.
 const dbs = new Map<string, Database.Database>();
 
-/** Map a virtual DB path (e.g. /nlca-{ts}-{slug}-10x10.sqlite3) to a real path on disk. */
-function resolveLocalPath(dbPath: string): string {
-	const filename = dbPath.replace(/^\/+/, '');
-
-	if (filename === 'nlca-index.sqlite3') {
-		return join(process.cwd(), 'experiments', filename);
-	}
-
-	// Extract model slug from: nlca-{timestamp}-{model-slug}-{W}x{H}.sqlite3
-	const match = filename.match(/^nlca-\d+-(.+)-\d+x\d+\.sqlite3$/);
-	const modelSlug = match?.[1] ?? 'unknown';
-	return join(process.cwd(), 'experiments', modelSlug, filename);
-}
-
 function getDb(dbPath: string): Database.Database {
-	if (dbs.has(dbPath)) return dbs.get(dbPath)!;
+	// Key the cache by the resolved path — two different virtual dbPath
+	// strings that normalize to the same file share one connection.
 	const localPath = resolveLocalPath(dbPath);
+	if (dbs.has(localPath)) return dbs.get(localPath)!;
 	mkdirSync(dirname(localPath), { recursive: true });
 	const db = new Database(localPath);
 	db.pragma('journal_mode = WAL');
-	dbs.set(dbPath, db);
+	dbs.set(localPath, db);
 	return db;
 }
 
@@ -64,12 +54,28 @@ export const POST: RequestHandler = async ({ request }) => {
 	const { dbPath, op, sql = '', bind = [] } = body;
 	if (!dbPath) throw error(400, 'Missing dbPath');
 
+	// Resolve once and reject any path-traversal attempt up-front.
+	let resolvedPath: string;
+	try {
+		resolvedPath = resolveLocalPath(dbPath);
+	} catch (e) {
+		throw error(400, `Invalid dbPath: ${e instanceof Error ? e.message : 'unknown'}`);
+	}
+
 	// Handle 'exists' before opening the DB (which would create the file).
 	if (op === 'exists') {
-		const localPath = resolveLocalPath(dbPath);
-		return new Response(JSON.stringify({ exists: existsSync(localPath) }), {
+		return new Response(JSON.stringify({ exists: existsSync(resolvedPath) }), {
 			headers: { 'Content-Type': 'application/json' }
 		});
+	}
+
+	// Stopgap allowlist — rejects ATTACH/DETACH/VACUUM/BACKUP/LOAD_EXTENSION
+	// and arbitrary PRAGMAs that a hostile client could use for RCE or
+	// exfiltration. Full typed RPC is the longer-term replacement; this
+	// gives us hosted-safety today.
+	if (op === 'exec' || op === 'run' || op === 'all' || op === 'get') {
+		const rejection = rejectIfForbiddenSql(sql);
+		if (rejection) throw error(400, `Rejected SQL: ${rejection}`);
 	}
 
 	const db = getDb(dbPath);

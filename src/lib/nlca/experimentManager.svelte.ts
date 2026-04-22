@@ -24,6 +24,7 @@ import {
 } from './types.js';
 import type { PromptConfig } from './prompt.js';
 import { estimateExperimentCost, getModelPricing } from './costEstimator.js';
+import { experimentDisplayName } from './experimentDisplayName.js';
 
 export interface Experiment {
 	id: string;
@@ -70,13 +71,15 @@ function generateDbFilename(config: ExperimentConfig): string {
 }
 
 function generateLabel(config: ExperimentConfig, index: number): string {
-	const modelShort = config.model.split('/').pop() ?? config.model;
-	const task = config.taskDescription?.trim();
-	const taskPreview = task
-		? (task.length > 40 ? task.slice(0, 37) + '…' : task)
-		: `Exp ${index}`;
-	const providerTag = config.apiProvider === 'sambanova' ? 'SN' : 'OR';
-	return `[${providerTag}] ${taskPreview} · ${modelShort} · ${config.gridWidth}×${config.gridHeight}`;
+	// Use the preset name when a preset is selected, else fall back to the
+	// first line of the task. The shared `experimentDisplayName` helper keeps
+	// this logic consistent with the runtime derivation in HUD/panels, so
+	// experiments loaded from meta.json render the same way as fresh ones.
+	return experimentDisplayName({
+		id: `exp-${index}`,
+		label: '',
+		config
+	});
 }
 
 function buildOrchestratorConfig(config: ExperimentConfig): NlcaOrchestratorConfig {
@@ -96,7 +99,8 @@ function buildOrchestratorConfig(config: ExperimentConfig): NlcaOrchestratorConf
 		memoryWindow: config.memoryWindow,
 		cellTimeoutMs: config.cellTimeoutMs,
 		compressPayload: config.compressPayload,
-		deduplicateRequests: config.deduplicateRequests
+		deduplicateRequests: config.deduplicateRequests,
+		sparseContextMode: config.sparseContextMode
 	};
 }
 
@@ -149,6 +153,9 @@ export class ExperimentManager {
 	/** Per-experiment generation counter used to void stale async rehydrates when
 	 * the user switches active experiments faster than disk reads complete. */
 	private rehydrateToken = new Map<string, number>();
+	/** Per-experiment counter bumped on every seek/scrub entry so a slow frame
+	 * fetch that finishes after a later seek can't regress the viewport. */
+	private seekToken = new Map<string, number>();
 	private lastAccessedAt = new Map<string, number>();
 	private lruClock = 0;
 	private static readonly LRU_BUDGET = 5;
@@ -784,6 +791,13 @@ export class ExperimentManager {
 			victim.currentGrid = null;
 			victim.currentColorsHex = null;
 			victim.currentColorStatus8 = null;
+			// Release stepper-held buffers (frameHistory, debugLog, dedupeCache).
+			// extendExperiment() rebuilds a fresh stepper from tape when the user
+			// returns to this experiment, so dropping it here is safe.
+			if (victim.stepper) {
+				victim.stepper.dispose();
+				victim.stepper = null;
+			}
 			this.hydration[victim.id] = 'idle';
 		}
 	}
@@ -829,8 +843,12 @@ export class ExperimentManager {
 		const exp = this.experiments[id];
 		if (!exp) return;
 
+		const token = (this.seekToken.get(id) ?? 0) + 1;
+		this.seekToken.set(id, token);
+
 		const totalCells = exp.config.gridWidth * exp.config.gridHeight;
 		const frame = await exp.tape.getFrame(id, generation);
+		if (this.seekToken.get(id) !== token) return;
 
 		if (frame) {
 			exp.currentGrid = unpackBitsetTo01(frame.stateBits, totalCells);
@@ -853,6 +871,7 @@ export class ExperimentManager {
 		// SQLite miss — in-memory browser DB doesn't carry old frames across
 		// reloads. Try the on-disk JSONL tape.
 		const jsonl = await persistence.loadFrame(id, generation);
+		if (this.seekToken.get(id) !== token) return;
 		if (!jsonl) {
 			console.warn(
 				`[ExperimentManager] Frame ${generation} not found for experiment ${id} in either SQLite or JSONL.`
@@ -883,6 +902,9 @@ export class ExperimentManager {
 		const exp = this.experiments[id];
 		if (!exp || exp.progress.current === 0) return;
 
+		const token = (this.seekToken.get(id) ?? 0) + 1;
+		this.seekToken.set(id, token);
+
 		const target = Math.max(1, Math.min(exp.progress.current, generation));
 		exp.autoFollow = false;
 
@@ -890,6 +912,7 @@ export class ExperimentManager {
 
 		// Try SQLite first (in-browser in-memory tape).
 		const sqliteFrame = await exp.tape.getFrame(id, target);
+		if (this.seekToken.get(id) !== token) return;
 		if (sqliteFrame) {
 			exp.viewGrid = unpackBitsetTo01(sqliteFrame.stateBits, totalCells);
 			exp.viewGeneration = target;
@@ -906,6 +929,7 @@ export class ExperimentManager {
 
 		// SQLite miss — fall back to JSONL tape on disk.
 		const jsonl = await persistence.loadFrame(id, target);
+		if (this.seekToken.get(id) !== token) return;
 		if (!jsonl) {
 			console.warn(`[ExperimentManager] Frame ${target} not found for experiment ${id}`);
 			return;

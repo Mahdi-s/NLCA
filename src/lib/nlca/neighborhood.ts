@@ -129,6 +129,42 @@ export function getCell01(
 	return v === 0 ? 0 : 1;
 }
 
+/**
+ * Build a 0/1 mask over the grid where mask[i] === 1 iff cell i is alive OR
+ * any of its neighbors is alive (respecting the current neighborhood and
+ * boundary). Cells with mask[i] === 0 have a dead self and dead neighbors, so
+ * under any monotone rule (Conway-style) their next state is deterministically
+ * dead — they can skip the LLM call entirely.
+ *
+ * Runs in O(width*height + alive*neighbors). On sparse grids this is a huge
+ * token-cost reduction; on dense grids it's a pass-through (mask is all 1s).
+ */
+export function computeActiveMask(
+	grid: Uint32Array,
+	width: number,
+	height: number,
+	neighborhood: NlcaNeighborhood,
+	boundary: BoundaryMode
+): Uint8Array {
+	const totalCells = width * height;
+	const mask = new Uint8Array(totalCells);
+	const offsets = getOffsets(neighborhood);
+
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const idx = x + y * width;
+			if ((grid[idx] ?? 0) === 0) continue;
+			mask[idx] = 1;
+			for (const [dx, dy] of offsets) {
+				const t = transformCoordinate(x + dx, y + dy, width, height, boundary);
+				if (t) mask[t.x + t.y * width] = 1;
+			}
+		}
+	}
+
+	return mask;
+}
+
 export function extractCellContext(
 	prev: Uint32Array,
 	width: number,

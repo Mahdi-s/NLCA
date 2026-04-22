@@ -24,6 +24,7 @@
 	let gridHeight = $state(10);
 	let memoryWindow = $state(3);
 	let targetFrames = $state(50);
+	let sparseContextMode = $state<'off' | 'skip-dead-interior'>('off');
 
 	// API settings
 	let apiKey = $state('');
@@ -70,6 +71,7 @@
 		gridWidth = nlcaSettings.gridWidth;
 		gridHeight = nlcaSettings.gridHeight;
 		targetFrames = nlcaSettings.targetFrames;
+		sparseContextMode = nlcaSettings.sparseContextMode;
 
 		await loadModelsForProvider(apiProvider);
 	});
@@ -214,6 +216,7 @@
 		nlcaSettings.gridWidth = gridWidth;
 		nlcaSettings.gridHeight = gridHeight;
 		nlcaSettings.targetFrames = targetFrames;
+		nlcaSettings.sparseContextMode = sparseContextMode;
 		onclose();
 	}
 </script>
@@ -383,6 +386,18 @@
 					<small>Frames to run per experiment</small>
 				</label>
 			</div>
+
+			<label>
+				<span>Sparse context</span>
+				<select bind:value={sparseContextMode}>
+					<option value="off">Off — every cell queries the LLM</option>
+					<option value="skip-dead-interior">Skip dead-interior — save tokens on sparse grids</option>
+				</select>
+				<small>
+					Dead cells whose neighborhood is also fully dead keep state 0 without an LLM call.
+					Disable for rules that spawn life from empty regions.
+				</small>
+			</label>
 
 			<!-- API section -->
 			<div class="section-label" style="margin-top: 4px;">API Keys</div>

@@ -1,7 +1,7 @@
 import type { BoundaryMode } from '$lib/stores/simulation.svelte.js';
 import { base } from '$app/paths';
 import type { CellContext, NlcaCellMetricsFrame, NlcaCellRequest, NlcaOrchestratorConfig, NlcaStepResult, NlcaNeighborhood, CellState01 } from './types.js';
-import { extractCellContext } from './neighborhood.js';
+import { computeActiveMask, extractCellContext } from './neighborhood.js';
 import { NlcaOrchestrator, type CellDecisionResult, type NlcaCostStats, type DebugLogEntry } from './orchestrator.js';
 import { CellAgentManager } from './agentManager.js';
 import type { PromptConfig } from './prompt.js';
@@ -51,12 +51,34 @@ export class NlcaStepper {
 	private frameBatchedFrames = 0;
 	private frameBatchedFallbacks = 0;
 	private prevColorsHex: Array<string | null> | null = null;
+	private disposed = false;
 
 	constructor(cfg: NlcaStepperConfig, agentManager: CellAgentManager) {
 		this.cfg = cfg;
 		this.agentManager = agentManager;
 		this.orchestrator = new NlcaOrchestrator(cfg.orchestrator);
 		console.log(`[NLCA] Stepper initialized - runId: ${cfg.runId}, neighborhood: ${cfg.neighborhood}`);
+	}
+
+	get isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	/**
+	 * Release the stepper's internal buffers. After dispose(), the stepper is
+	 * no longer usable. Used by ExperimentManager when evicting an experiment
+	 * from the LRU cache so the NlcaOrchestrator's debug log, dedupe cache, and
+	 * the per-cell frame history don't accumulate across sessions.
+	 *
+	 * Idempotent — safe to call multiple times.
+	 */
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.frameHistory = null;
+		this.prevColorsHex = null;
+		this.agentManager.clearAllHistory();
+		this.orchestrator.dispose();
 	}
 
 	updateOrchestratorConfig(partial: Partial<NlcaOrchestratorConfig>) {
@@ -217,6 +239,30 @@ export class NlcaStepper {
 		const memoryWindow = Math.max(0, Math.floor(this.cfg.orchestrator.memoryWindow ?? 0));
 		const history = this.ensureFrameHistory(totalCells);
 
+		// Sparse context: when enabled, dead cells with dead neighbors are
+		// deterministically left dead without an LLM call. Gates the entire
+		// cell list before building payloads — huge savings on sparse grids.
+		let payloadCandidates: readonly CellContext[] = cells;
+		let skippedCount = 0;
+		if ((this.cfg.orchestrator.sparseContextMode ?? 'off') === 'skip-dead-interior') {
+			const mask = computeActiveMask(prev, width, height, this.cfg.neighborhood, this.cfg.boundary);
+			const keep: CellContext[] = [];
+			for (const c of cells) {
+				if (mask[c.id] === 1) {
+					keep.push(c);
+				} else {
+					decisions.set(c.id, 0);
+					skippedCount++;
+				}
+			}
+			payloadCandidates = keep;
+			if (skippedCount > 0) {
+				console.log(
+					`[NLCA] Sparse skip: ${skippedCount}/${totalCells} dead-interior cells (${((skippedCount / totalCells) * 100).toFixed(1)}%)`
+				);
+			}
+		}
+
 		const makePayloadCells = (subset: readonly CellContext[]) =>
 			subset.map((c) => ({
 				cellId: c.id,
@@ -236,9 +282,15 @@ export class NlcaStepper {
 		// while the single upstream request is in flight.
 		callbacks?.onBatchProgress?.(0, totalCells, workingGrid);
 
+		// If every cell was skipped by sparse-context, we're done — no LLM call.
+		if (payloadCandidates.length === 0) {
+			callbacks?.onBatchProgress?.(totalCells, totalCells, workingGrid);
+			return { decisionMap: decisions, colorsHex, colorStatus8 };
+		}
+
 		// Attempt streaming (if enabled), otherwise single-call-per-frame; then fallback chunking.
 		try {
-			const payloadCells = makePayloadCells(cells);
+			const payloadCells = makePayloadCells(payloadCandidates);
 
 			// Pre-flight: streaming sends all cells in one API call with a single
 			// max_tokens budget. The server clamps max_tokens at 12288, which fits
@@ -248,13 +300,13 @@ export class NlcaStepper {
 			const STREAM_MAX_CELLS_WITH_COLOR = 450;
 			const STREAM_MAX_CELLS_NO_COLOR = 900;
 			const streamCap = wantColor ? STREAM_MAX_CELLS_WITH_COLOR : STREAM_MAX_CELLS_NO_COLOR;
-			if (this.cfg.orchestrator.frameStreamed && totalCells > streamCap) {
+			if (this.cfg.orchestrator.frameStreamed && payloadCandidates.length > streamCap) {
 				console.warn(
-					`[NLCA] Skipping stream for ${totalCells}-cell frame (> ${streamCap}); using chunked dispatch so every chunk fits the server output ceiling.`
+					`[NLCA] Skipping stream for ${payloadCandidates.length}-cell frame (> ${streamCap}); using chunked dispatch so every chunk fits the server output ceiling.`
 				);
 				this.frameBatchedFallbacks++;
 				await this.decideFrameParallelChunks(
-					cells,
+					payloadCandidates,
 					width,
 					height,
 					generation,
@@ -281,10 +333,13 @@ export class NlcaStepper {
 						: this.cfg.orchestrator.apiKey ?? '';
 				const res = await fetch(`${base}/api/nlca/decideFrameStream`, {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'text/event-stream',
+						...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {})
+					},
 					body: JSON.stringify({
 						apiProvider: provider,
-						apiKey: activeKey,
 						model: this.cfg.orchestrator.model.model,
 						temperature: this.cfg.orchestrator.model.temperature,
 						timeoutMs: this.cfg.orchestrator.cellTimeoutMs,
@@ -468,7 +523,7 @@ export class NlcaStepper {
 
 			// Use parallel chunk dispatch for better throughput
 			await this.decideFrameParallelChunks(
-				cells,
+				payloadCandidates,
 				width,
 				height,
 				generation,
@@ -485,6 +540,8 @@ export class NlcaStepper {
 		}
 
 		// Update per-cell history window with decided next state (or keep self).
+		// Skipped cells (sparse mode) already have a deterministic `decisions.get(i) = 0`,
+		// so history stays coherent for them too.
 		if (memoryWindow > 0) {
 			for (let i = 0; i < totalCells; i++) {
 				const self: CellState01 = (prev[i] ?? 0) === 0 ? 0 : 1;

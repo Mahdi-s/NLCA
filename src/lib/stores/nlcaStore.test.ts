@@ -120,6 +120,58 @@ describe('nlcaStore hydration', () => {
     });
 });
 
+describe('nlcaStore seek race', () => {
+    beforeEach(() => {
+        __resetNlcaStoreForTests();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    test('setViewGeneration supersedes a stale in-flight response', async () => {
+        const store = getNlcaStore();
+
+        // Two resolvers we control: the "slow" frame 10 response completes AFTER the
+        // "fast" frame 20 response. A naive impl would let frame 10 overwrite frame 20.
+        let resolveSlow: (v: unknown) => void = () => {};
+        const slowPromise = new Promise((r) => { resolveSlow = r; });
+        let resolveFast: (v: unknown) => void = () => {};
+        const fastPromise = new Promise((r) => { resolveFast = r; });
+
+        const tape = {
+            getFrame: vi.fn()
+                .mockReturnValueOnce(slowPromise)
+                .mockReturnValueOnce(fastPromise)
+        };
+
+        store.experiments['scrub'] = {
+            id: 'scrub', label: 't', config: { gridWidth: 5, gridHeight: 5 } as never,
+            status: 'paused' as const, stepper: null, tape: tape as never, frameBuffer: null,
+            agentManager: null, progress: { current: 100, target: 100 }, createdAt: 0,
+            dbFilename: '/x.sqlite3', currentGrid: new Uint32Array(25),
+            currentColorsHex: null, currentColorStatus8: null, currentGeneration: 100,
+            viewGrid: null, viewGeneration: 0, autoFollow: true, bufferStatus: null,
+            totalCost: 0, estimatedCost: 0, pricingUnknown: true,
+            totalCalls: 0, lastLatencyMs: null
+        };
+
+        // Scrub backward in two rapid pointer moves: 10, then 20.
+        const slowCall = store.setViewGeneration('scrub', 10);
+        const fastCall = store.setViewGeneration('scrub', 20);
+
+        // Fast resolves first (frame 20). Viewport should jump to 20.
+        resolveFast({ stateBits: new Uint8Array(Math.ceil(25 / 8)), colorsHex: null });
+        await fastCall;
+        expect(store.experiments['scrub'].viewGeneration).toBe(20);
+
+        // Slow resolves later (frame 10). Viewport must NOT regress.
+        resolveSlow({ stateBits: new Uint8Array(Math.ceil(25 / 8)), colorsHex: null });
+        await slowCall;
+        expect(store.experiments['scrub'].viewGeneration).toBe(20);
+    });
+});
+
 describe('nlcaStore LRU cache', () => {
     beforeEach(() => {
         __resetNlcaStoreForTests();
@@ -153,6 +205,39 @@ describe('nlcaStore LRU cache', () => {
         ).length;
         expect(evictedCount).toBe(1);
         expect(store.experiments['e1'].currentGrid).toBeNull();
+    });
+
+    test('disposes the evicted experiment stepper so its internal buffers are released', () => {
+        const store = getNlcaStore();
+        const disposeSpies: Record<string, ReturnType<typeof vi.fn>> = {};
+        const mkExp = (id: string) => {
+            disposeSpies[id] = vi.fn();
+            const mockStepper = { dispose: disposeSpies[id], isDisposed: false } as never;
+            return {
+                id, label: id, config: { gridWidth: 5, gridHeight: 5 } as never,
+                status: 'paused' as const, stepper: mockStepper, tape: null as never, frameBuffer: null,
+                agentManager: null, progress: { current: 1, target: 10 }, createdAt: 0,
+                dbFilename: `/${id}.sqlite3`, currentGrid: new Uint32Array(25),
+                currentColorsHex: null, currentColorStatus8: null, currentGeneration: 1, viewGrid: null, viewGeneration: 0, autoFollow: true,
+                bufferStatus: null, totalCost: 0, estimatedCost: 0, pricingUnknown: true,
+                totalCalls: 0, lastLatencyMs: null
+            };
+        };
+
+        for (let i = 1; i <= 7; i++) {
+            store.experiments[`e${i}`] = mkExp(`e${i}`);
+        }
+
+        for (let i = 1; i <= 7; i++) {
+            store.setActive(`e${i}`);
+        }
+
+        // e1 should be the LRU victim — its stepper was disposed and nulled.
+        expect(disposeSpies['e1']).toHaveBeenCalledTimes(1);
+        expect(store.experiments['e1'].stepper).toBeNull();
+        // e7 (active) keeps its stepper.
+        expect(store.experiments['e7'].stepper).not.toBeNull();
+        expect(disposeSpies['e7']).not.toHaveBeenCalled();
     });
 
     test('never evicts running experiments even if past budget', () => {

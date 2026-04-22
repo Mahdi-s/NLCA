@@ -227,39 +227,75 @@ export function calculateOptimalChunkSize(
 }
 
 /**
- * Hash a cell's decision context for deduplication.
- * The hash includes: self state, neighbor states, and history (if any).
- * Position (x, y) is intentionally excluded since cells with identical
- * context at different positions should behave the same way.
+ * Parse '#RRGGBB' into a 24-bit integer without allocating. Returns 0 on
+ * malformed input — good enough for a hash where exact equality of inputs
+ * is what matters, not round-trip correctness.
+ */
+function hexToInt24(hex: string): number {
+	if (hex.length !== 7 || hex.charCodeAt(0) !== 35) return 0;
+	let v = 0;
+	for (let i = 1; i < 7; i++) {
+		const c = hex.charCodeAt(i);
+		let d: number;
+		if (c >= 48 && c <= 57) d = c - 48;
+		else if (c >= 97 && c <= 102) d = c - 87;
+		else if (c >= 65 && c <= 70) d = c - 55;
+		else return 0;
+		v = (v << 4) | d;
+	}
+	return v;
+}
+
+/**
+ * Hash a cell's decision context for deduplication, using FNV-1a over integer
+ * chunks — no string allocation on the hot path. Returns an unsigned 32-bit
+ * integer so dedupeCache can be a `Map<number, ...>` with O(1) integer keys.
+ *
+ * The hash includes: self state, neighbor states (in the order given — which
+ * is the canonical `getOffsets()` order when neighbors come from
+ * `extractCellContext`), neighbor colors (if color mode), history, and
+ * prevColor. Position (x, y) is intentionally excluded so cells with identical
+ * context at different positions share decisions.
  */
 export function hashCellContext(
 	self: CellState01,
 	neighbors: Array<[number, number, CellState01] | [number, number, CellState01, string | null]>,
 	history?: CellState01[],
 	prevColor?: string | null
-): string {
-	const sortedNeighbors = [...neighbors].sort((a, b) => {
-		if (a[0] !== b[0]) return a[0] - b[0];
-		return a[1] - b[1];
-	});
+): number {
+	const FNV_PRIME = 0x01000193;
+	let h = 0x811c9dc5;
 
-	const parts: string[] = [
-		String(self),
-		sortedNeighbors.map(n => {
-			const color = n[3];
-			return color !== undefined ? `${n[2]}:${color ?? ''}` : String(n[2]);
-		}).join(',')
-	];
+	h = Math.imul(h ^ self, FNV_PRIME);
+	h = Math.imul(h ^ neighbors.length, FNV_PRIME);
+
+	for (let i = 0; i < neighbors.length; i++) {
+		const n = neighbors[i]!;
+		// Pack (dx, dy, state) into 16 bits: dx and dy each biased by +8
+		// to fit -2..2 in 5 bits; state in bit 10.
+		const packed = ((n[0] + 8) & 0x1f) | (((n[1] + 8) & 0x1f) << 5) | ((n[2] & 1) << 10);
+		h = Math.imul(h ^ packed, FNV_PRIME);
+		const color = n[3];
+		if (color !== undefined) {
+			const mark = color === null ? 0xffffff + 1 : hexToInt24(color);
+			h = Math.imul(h ^ mark, FNV_PRIME);
+		}
+	}
 
 	if (history && history.length > 0) {
-		parts.push(history.join(''));
+		h = Math.imul(h ^ 0x7f, FNV_PRIME);
+		for (let i = 0; i < history.length; i++) {
+			h = Math.imul(h ^ history[i]!, FNV_PRIME);
+		}
 	}
 
 	if (prevColor !== undefined) {
-		parts.push(prevColor ?? '');
+		h = Math.imul(h ^ 0xff, FNV_PRIME);
+		const mark = prevColor === null ? 0xffffff + 1 : hexToInt24(prevColor);
+		h = Math.imul(h ^ mark, FNV_PRIME);
 	}
 
-	return parts.join('|');
+	return h >>> 0;
 }
 
 /** Cached decision result for deduplication */
@@ -288,8 +324,10 @@ export class NlcaOrchestrator {
 	private maxDebugLogSize = 500; // Keep last 500 entries
 	private debugEnabled = true;
 	
-	// Generation-scoped deduplication cache
-	private dedupeCache: Map<string, CachedDecision> = new Map();
+	// Generation-scoped deduplication cache. Keyed by the 32-bit FNV-1a hash
+	// returned by hashCellContext — integer keys give O(1) Map lookup without
+	// the string interning churn of the previous `Map<string, ...>` impl.
+	private dedupeCache: Map<number, CachedDecision> = new Map();
 	private dedupeCacheGeneration: number = -1;
 	private dedupeStats = { hits: 0, misses: 0 };
 
@@ -396,7 +434,7 @@ export class NlcaOrchestrator {
 	}
 
 	/** Look up a cached decision by context hash */
-	private getDedupedDecision(hash: string): CachedDecision | undefined {
+	private getDedupedDecision(hash: number): CachedDecision | undefined {
 		if (!this.cfg.deduplicateRequests) return undefined;
 		const cached = this.dedupeCache.get(hash);
 		if (cached) {
@@ -406,7 +444,7 @@ export class NlcaOrchestrator {
 	}
 
 	/** Store a decision in the deduplication cache */
-	private cacheDedupedDecision(hash: string, decision: CachedDecision): void {
+	private cacheDedupedDecision(hash: number, decision: CachedDecision): void {
 		if (!this.cfg.deduplicateRequests) return;
 		this.dedupeCache.set(hash, decision);
 		this.dedupeStats.misses++;
@@ -450,6 +488,18 @@ export class NlcaOrchestrator {
 	/** Clear debug log */
 	clearDebugLog(): void {
 		this.debugLog = [];
+	}
+
+	/**
+	 * Release retained state when the owning stepper is being evicted. Keeps
+	 * the final costStats snapshot so the ExperimentManager can still surface
+	 * lifetime totals on the experiment card after the orchestrator is gone.
+	 */
+	dispose(): void {
+		this.debugLog = [];
+		this.dedupeCache.clear();
+		this.dedupeStats = { hits: 0, misses: 0 };
+		this.dedupeCacheGeneration = -1;
 	}
 
 	/** Enable/disable debug logging */
@@ -557,12 +607,15 @@ export class NlcaOrchestrator {
 		const t0 = performance.now();
 
 		try {
+			const activeKey = this.getActiveApiKey();
 			const res = await fetch(`${base}/api/nlca/decide`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {})
+				},
 				body: JSON.stringify({
 					apiProvider: this.cfg.apiProvider ?? 'openrouter',
-					apiKey: this.getActiveApiKey(),
 					model: this.cfg.model.model,
 					temperature: this.cfg.model.temperature,
 					maxOutputTokens: this.cfg.model.maxOutputTokens,
@@ -701,7 +754,7 @@ export class NlcaOrchestrator {
 		// Check for cached decisions (deduplication within generation)
 		const out = new Map<number, CellDecisionResult>();
 		const cellsToProcess: typeof args.cells = [];
-		const cellHashes = new Map<number, string>(); // cellId -> hash
+		const cellHashes = new Map<number, number>(); // cellId -> 32-bit FNV-1a hash
 		
 		if (this.cfg.deduplicateRequests) {
 			for (const cell of args.cells) {
@@ -744,12 +797,15 @@ export class NlcaOrchestrator {
 		}
 		let res: Response;
 		try {
+			const activeKey = this.getActiveApiKey();
 			res = await fetch(`${base}/api/nlca/decideFrame`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {})
+				},
 				body: JSON.stringify({
 					apiProvider: this.cfg.apiProvider ?? 'openrouter',
-					apiKey: this.getActiveApiKey(),
 					model: this.cfg.model.model,
 					temperature: this.cfg.model.temperature,
 					timeoutMs: this.cfg.cellTimeoutMs,

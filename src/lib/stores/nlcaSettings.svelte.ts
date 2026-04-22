@@ -1,5 +1,7 @@
 import type { ApiProvider, NlcaNeighborhood } from '$lib/nlca/types.js';
 
+type SparseContextMode = 'off' | 'skip-dead-interior';
+
 type NlcaSettingsSnapshot = {
 	apiProvider: ApiProvider;
 	apiKey: string;
@@ -14,6 +16,7 @@ type NlcaSettingsSnapshot = {
 	gridWidth: number;
 	gridHeight: number;
 	targetFrames: number;
+	sparseContextMode: SparseContextMode;
 };
 
 const STORAGE_KEYS = {
@@ -29,7 +32,8 @@ const STORAGE_KEYS = {
 	neighborhood: 'nlca_neighborhood',
 	gridWidth: 'nlca_grid_width',
 	gridHeight: 'nlca_grid_height',
-	targetFrames: 'nlca_target_frames'
+	targetFrames: 'nlca_target_frames',
+	sparseContextMode: 'nlca_sparse_context_mode'
 } as const;
 
 const SAMBANOVA_DEFAULT_MODEL = 'Meta-Llama-3.3-70B-Instruct';
@@ -73,6 +77,11 @@ function parseProvider(value: string | null, fallback: ApiProvider): ApiProvider
 	return fallback;
 }
 
+function parseSparseMode(value: string | null, fallback: SparseContextMode): SparseContextMode {
+	if (value === 'off' || value === 'skip-dead-interior') return value;
+	return fallback;
+}
+
 let initialized = false;
 
 let apiProvider = $state<ApiProvider>('openrouter');
@@ -88,6 +97,7 @@ let neighborhood = $state<NlcaNeighborhood>('moore');
 let gridWidth = $state(10);
 let gridHeight = $state(10);
 let targetFrames = $state(50);
+let sparseContextMode = $state<SparseContextMode>('off');
 
 function ensureInitialized() {
 	if (initialized) return;
@@ -121,6 +131,7 @@ function ensureInitialized() {
 	gridWidth = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridWidth) ?? '10'), 8, 512, 10);
 	gridHeight = clampInt(Number(safeReadStorage(STORAGE_KEYS.gridHeight) ?? '10'), 8, 512, 10);
 	targetFrames = clampInt(Number(safeReadStorage(STORAGE_KEYS.targetFrames) ?? '50'), 1, 10000, 50);
+	sparseContextMode = parseSparseMode(safeReadStorage(STORAGE_KEYS.sparseContextMode), 'off');
 }
 
 export function getNlcaSettingsState() {
@@ -248,6 +259,14 @@ export function getNlcaSettingsState() {
 			safeWriteStorage(STORAGE_KEYS.targetFrames, String(targetFrames));
 		},
 
+		get sparseContextMode() {
+			return sparseContextMode;
+		},
+		set sparseContextMode(value: SparseContextMode) {
+			sparseContextMode = parseSparseMode(value, 'off');
+			safeWriteStorage(STORAGE_KEYS.sparseContextMode, sparseContextMode);
+		},
+
 		toJSON(): NlcaSettingsSnapshot {
 			return {
 				apiProvider,
@@ -262,7 +281,8 @@ export function getNlcaSettingsState() {
 				neighborhood,
 				gridWidth,
 				gridHeight,
-				targetFrames
+				targetFrames,
+				sparseContextMode
 			};
 		}
 	};

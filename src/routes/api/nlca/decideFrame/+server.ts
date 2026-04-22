@@ -1,6 +1,7 @@
 import { json, error, isHttpError, type RequestHandler } from '@sveltejs/kit';
 import { writeNlcaLog, buildCellBreakdown } from '$lib/server/nlcaLogger.js';
 import { dev } from '$app/environment';
+import { extractApiKey } from '../_shared/extractApiKey.js';
 
 type CellState01 = 0 | 1;
 
@@ -372,7 +373,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	}
 
 	const provider: ApiProvider = payload?.apiProvider === 'sambanova' ? 'sambanova' : 'openrouter';
-	const apiKey = typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : '';
+	const apiKey = extractApiKey(request, payload);
 	const rawModel = typeof payload?.model === 'string' ? payload.model.trim() : '';
 	const model = rawModel || (provider === 'sambanova' ? SAMBANOVA_DEFAULT_MODEL : '');
 	const width = Number(payload?.width ?? NaN);

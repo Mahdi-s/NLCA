@@ -95,6 +95,15 @@ export interface NlcaOrchestratorConfig {
 	compressPayload?: boolean;
 	/** If true, deduplicate identical cell contexts within a generation (default: false). */
 	deduplicateRequests?: boolean;
+	/**
+	 * How aggressively to skip LLM calls for inactive regions.
+	 *  - 'off'                — send every cell to the LLM (default, matches legacy behavior).
+	 *  - 'skip-dead-interior' — dead cells with a fully-dead neighborhood
+	 *                           deterministically stay dead. Reduces token cost
+	 *                           and latency on sparse grids. Users can disable
+	 *                           for rules that spawn life from empty regions.
+	 */
+	sparseContextMode?: 'off' | 'skip-dead-interior';
 }
 
 export interface NlcaRunConfig {
@@ -167,6 +176,8 @@ export interface ExperimentConfig {
 	cellTimeoutMs: number;
 	compressPayload: boolean;
 	deduplicateRequests: boolean;
+	/** Skip LLM calls for cells with a fully-dead neighborhood. Default 'off'. */
+	sparseContextMode?: 'off' | 'skip-dead-interior';
 
 	// Run Configuration
 	targetFrames: number;
