@@ -205,24 +205,31 @@
 		const active = experimentManager.active;
 		if (!active) return;
 		if (experimentManager.playback) experimentManager.stopPlayback();
-		if (active.status === 'running') {
-			await experimentManager.pauseExperiment(active.id);
-		}
-		await experimentManager.seekToGeneration(active.id, generation);
+		await experimentManager.setViewGeneration(active.id, generation);
 	}
 
 	async function handleSeekPrev() {
 		const active = experimentManager.active;
-		if (!active || active.currentGeneration <= 1) return;
-		await handleSeek(active.currentGeneration - 1);
+		if (!active) return;
+		const viewGen = active.viewGeneration ?? active.currentGeneration;
+		if (viewGen <= 1) return;
+		await handleSeek(viewGen - 1);
 	}
 
 	async function handleSeekNext() {
 		const active = experimentManager.active;
-		if (!active || active.currentGeneration >= active.progress.current) return;
-		await handleSeek(active.currentGeneration + 1);
+		if (!active) return;
+		const viewGen = active.viewGeneration ?? active.currentGeneration;
+		if (viewGen >= active.progress.current) return;
+		await handleSeek(viewGen + 1);
 	}
-	
+
+	function handleFollowLive() {
+		const active = experimentManager.active;
+		if (!active) return;
+		experimentManager.followLive(active.id);
+	}
+
 	function handleStartBatchRun(generations: number) {
 		canvas.startNlcaBatchRun(generations);
 	}
@@ -359,6 +366,7 @@
 		onseek={handleSeek}
 		onseekprev={handleSeekPrev}
 		onseeknext={handleSeekNext}
+		onfollowlive={handleFollowLive}
 		onexperiments={() => showExperimentPanel = !showExperimentPanel}
 		showExperimentPanel={showExperimentPanel}
 	/>
