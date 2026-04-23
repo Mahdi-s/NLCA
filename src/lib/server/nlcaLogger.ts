@@ -12,7 +12,7 @@
  * All writes are fire-and-forget; logging errors never propagate to the caller.
  */
 
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, readdirSync, readFileSync, statSync, existsSync } from 'fs';
 import { join } from 'path';
 
 /** One cell entry in the breakdown array */
@@ -94,6 +94,77 @@ export function writeNlcaLog(entry: NlcaLogEntry): void {
 	} catch (err) {
 		console.warn('[NLCA LOG] Failed to write log entry:', err instanceof Error ? err.message : String(err));
 	}
+}
+
+/** Filename pattern: `gen-NNNN-<timestampMs>.json`. */
+const LOG_FILE_RE = /^gen-(\d{4})-(\d+)\.json$/;
+
+interface LogFileMeta {
+	generation: number;
+	timestampMs: number;
+	filename: string;
+}
+
+function listLogFiles(runId: string): LogFileMeta[] {
+	const dir = resolveLogsDir(runId);
+	if (!existsSync(dir)) return [];
+	const out: LogFileMeta[] = [];
+	for (const filename of readdirSync(dir)) {
+		const m = LOG_FILE_RE.exec(filename);
+		if (!m) continue;
+		out.push({
+			generation: Number(m[1]),
+			timestampMs: Number(m[2]),
+			filename
+		});
+	}
+	return out;
+}
+
+/** Returns sorted, deduplicated generation numbers for which any log exists. */
+export function listLogs(runId: string): number[] {
+	const files = listLogFiles(runId);
+	const seen = new Set<number>();
+	for (const f of files) seen.add(f.generation);
+	return [...seen].sort((a, b) => a - b);
+}
+
+/**
+ * Read the log entry for a given generation.  When multiple files exist for
+ * the same generation (a paused/resumed run can write retries), the file with
+ * the largest `timestampMs` wins — that's the canonical, latest attempt.
+ */
+export function readLog(runId: string, generation: number): NlcaLogEntry | null {
+	const files = listLogFiles(runId).filter((f) => f.generation === generation);
+	if (files.length === 0) return null;
+	files.sort((a, b) => b.timestampMs - a.timestampMs);
+	const path = join(resolveLogsDir(runId), files[0].filename);
+	try {
+		const raw = readFileSync(path, 'utf8');
+		return JSON.parse(raw) as NlcaLogEntry;
+	} catch {
+		return null;
+	}
+}
+
+export function hasLogs(runId: string): boolean {
+	return listLogFiles(runId).length > 0;
+}
+
+/** Largest mtime (ms) across all log files for the run, or 0 if none. */
+export function latestMtimeMs(runId: string): number {
+	const dir = resolveLogsDir(runId);
+	const files = listLogFiles(runId);
+	let max = 0;
+	for (const f of files) {
+		try {
+			const stat = statSync(join(dir, f.filename));
+			if (stat.mtimeMs > max) max = stat.mtimeMs;
+		} catch {
+			// ignore
+		}
+	}
+	return max;
 }
 
 /**

@@ -5,9 +5,10 @@
 	interface Props {
 		experiment: Experiment | null;
 		onViewPrompt: () => void;
+		onAuditPrompts?: () => void;
 	}
 
-	let { experiment, onViewPrompt }: Props = $props();
+	let { experiment, onViewPrompt, onAuditPrompts }: Props = $props();
 
 	const displayName = $derived(experiment ? experimentDisplayName(experiment) : '');
 
@@ -74,6 +75,10 @@
 
 		<div class="action-row">
 			<button class="link-btn" onclick={onViewPrompt}>View Prompt</button>
+			{#if onAuditPrompts}
+				<span class="dot">·</span>
+				<button class="link-btn" onclick={onAuditPrompts}>Audit Prompts</button>
+			{/if}
 			{#if experiment.errorMessage}
 				<span class="err">{experiment.errorMessage}</span>
 			{/if}

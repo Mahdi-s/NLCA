@@ -11,6 +11,7 @@
 	import NlcaPromptModal from '$lib/components/NlcaPromptModal.svelte';
 	import NlcaBatchRunModal from '$lib/components/NlcaBatchRunModal.svelte';
 	import NlcaPromptViewer from '$lib/components/NlcaPromptViewer.svelte';
+	import NlcaPromptAudit from '$lib/components/NlcaPromptAudit.svelte';
 	import NlcaHUD from '$lib/components/NlcaHUD.svelte';
 	import NlcaExperimentPanel from './NlcaExperimentPanel.svelte';
 	import { getNlcaStore } from '$lib/stores/nlcaStore.svelte.js';
@@ -33,6 +34,7 @@
 	const showNlcaSettings = $derived(modalStates.nlcaSettings.isOpen);
 	const showNlcaPrompt = $derived(modalStates.nlcaPrompt.isOpen);
 	const showNlcaPromptViewer = $derived(modalStates.nlcaPromptViewer.isOpen);
+	const showNlcaPromptAudit = $derived(modalStates.nlcaPromptAudit.isOpen);
 	const showNlcaBatchRun = $derived(modalStates.nlcaBatchRun.isOpen);
 
 	// Experiment Manager
@@ -198,6 +200,9 @@
 	function openNlcaPromptViewer() {
 		toggleModal('nlcaPromptViewer');
 	}
+	function openNlcaPromptAudit() {
+		toggleModal('nlcaPromptAudit');
+	}
 	function openNlcaBatchRunModal() {
 		toggleModal('nlcaBatchRun');
 	}
@@ -290,6 +295,7 @@
 				closeModal('nlcaSettings');
 				closeModal('nlcaPrompt');
 				closeModal('nlcaPromptViewer');
+				closeModal('nlcaPromptAudit');
 				closeModal('nlcaBatchRun');
 				showExperimentPanel = false;
 				uiState.closeAll();
@@ -329,6 +335,7 @@
 		<NlcaHUD
 			experiment={experimentManager.active}
 			onViewPrompt={openNlcaPromptViewer}
+			onAuditPrompts={openNlcaPromptAudit}
 		/>
 	{/if}
 
@@ -405,6 +412,14 @@
 		<NlcaPromptViewer
 			experiment={experimentManager.active}
 			onclose={() => closeModal('nlcaPromptViewer')}
+		/>
+	{/if}
+
+	{#if showNlcaPromptAudit}
+		<NlcaPromptAudit
+			experiment={experimentManager.active}
+			onclose={() => closeModal('nlcaPromptAudit')}
+			onSelectFrame={(generation) => handleSeek(generation)}
 		/>
 	{/if}
 

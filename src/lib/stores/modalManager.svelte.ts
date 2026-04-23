@@ -15,6 +15,7 @@ export type ModalId =
 	| 'nlcaSettings'
 	| 'nlcaPrompt'
 	| 'nlcaPromptViewer'
+	| 'nlcaPromptAudit'
 	| 'nlcaBatchRun';
 
 export interface ModalState {
@@ -39,6 +40,7 @@ const modalStates = $state<Record<ModalId, ModalState>>({
 	nlcaSettings: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaPrompt: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaPromptViewer: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
+	nlcaPromptAudit: { isOpen: false, position: null, zIndex: BASE_Z_INDEX },
 	nlcaBatchRun: { isOpen: false, position: null, zIndex: BASE_Z_INDEX }
 });
 
