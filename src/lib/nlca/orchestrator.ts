@@ -81,6 +81,32 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const DEFAULT_CONTEXT_WINDOW = 16_000; // Conservative default for unknown models
 
 /**
+ * Reasoning-model output overhead (in tokens). These models emit hidden
+ * `reasoning` / chain-of-thought tokens that count against `max_tokens` but
+ * don't appear in the decisions array. Subtracted from the safe output budget
+ * so the chunker leaves room for thinking.
+ *
+ * Patterns are matched against the model id (lowercase, substring match).
+ * If multiple patterns match, the largest overhead wins.
+ */
+const MODEL_REASONING_OVERHEAD: Array<{ pattern: RegExp; overhead: number }> = [
+	{ pattern: /openai\/o1/i, overhead: 4_000 },
+	{ pattern: /openai\/o3/i, overhead: 4_000 },
+	{ pattern: /x-ai\/grok-4/i, overhead: 2_000 },
+	{ pattern: /grok-4/i, overhead: 2_000 },
+	{ pattern: /deepseek-r1/i, overhead: 3_000 },
+	{ pattern: /qwen.*qwq/i, overhead: 2_000 }
+];
+
+function reasoningOverheadFor(modelId: string): number {
+	let max = 0;
+	for (const { pattern, overhead } of MODEL_REASONING_OVERHEAD) {
+		if (pattern.test(modelId) && overhead > max) max = overhead;
+	}
+	return max;
+}
+
+/**
  * SambaNova Hyperscale chunk size. Unique contexts are mathematically bounded by
  * the neighborhood (2^9 = 512 for Moore binary), so once deduplication is applied
  * the payload cannot exceed this many rows. We size the chunk above the max so
@@ -192,11 +218,18 @@ export function calculateOptimalChunkSize(
 	// Reserve space for system prompt (~200 tokens) and JSON structure (~100 tokens)
 	const systemOverhead = 300;
 
-	// Safe output budget: 30% of context for output (conservative for structured outputs)
-	// but never larger than the server's hard ceiling.
-	const safeOutputBudget = Math.min(
-		SERVER_OUTPUT_CEILING,
-		Math.floor((modelContextWindow - systemOverhead) * 0.3)
+	// Reasoning models burn hidden tokens against max_tokens; reserve for them.
+	const reasoningOverhead = reasoningOverheadFor(modelId);
+
+	// Safe output budget: 25% of context for output (lowered from 30% to leave
+	// headroom for reasoning chunks and per-decision JSON whitespace), but never
+	// larger than the server's hard ceiling minus the reasoning overhead.
+	const safeOutputBudget = Math.max(
+		512,
+		Math.min(
+			SERVER_OUTPUT_CEILING - reasoningOverhead,
+			Math.floor((modelContextWindow - systemOverhead) * 0.25) - reasoningOverhead
+		)
 	);
 
 	// Estimate tokens per cell
@@ -209,13 +242,17 @@ export function calculateOptimalChunkSize(
 	const tokensPerCell = inputPerCell + outputPerCell;
 	const maxCellsRaw = Math.floor((modelContextWindow - systemOverhead) / tokensPerCell);
 
-	// Output-budget cap. The server multiplies per-cell output by a 1.4 safety
-	// factor when computing max_tokens, so do the same here to stay under the
-	// ceiling with margin for the model's trailing whitespace / brackets.
-	const maxCellsByOutput = Math.floor(safeOutputBudget / (outputPerCell * 1.4));
+	// Output-budget cap. Color mode emits more JSON per decision (hex string +
+	// quotes + key) and historically under-budgets by ~15% — bump per-cell
+	// safety factor to 1.6 for color, 1.4 otherwise.
+	const outputSafetyFactor = wantColor ? 1.6 : 1.4;
+	const maxCellsByOutput = Math.floor(safeOutputBudget / (outputPerCell * outputSafetyFactor));
 
-	// Use the smaller of the two, with some safety margin (80%)
-	const maxCellsPerChunk = Math.max(50, Math.floor(Math.min(maxCellsRaw, maxCellsByOutput) * 0.8));
+	// Use the smaller of the two, with a 70% final safety margin (was 80%) —
+	// observed real-world failures (Llama-3.3-70B 40×40, Grok-4 20×20) show the
+	// previous margin was too tight when the model's tokenizer is denser than
+	// the GPT estimate.
+	const maxCellsPerChunk = Math.max(50, Math.floor(Math.min(maxCellsRaw, maxCellsByOutput) * 0.7));
 
 	return {
 		maxCellsPerChunk,

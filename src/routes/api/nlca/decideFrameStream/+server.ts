@@ -933,21 +933,29 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 				}
 
 				// -----------------------------------------------------------------------
-				// Max-tokens cutoff retry: partial decisions parsed but usage hit the cap.
+				// Max-tokens cutoff retry: partial decisions parsed and we believe the
+				// stream truncated. Triggered when:
+				//   (a) usage reports billedTokens >= 95% of cap (clear truncation), OR
+				//   (b) usage is null (some providers, e.g. Grok via OpenRouter, omit
+				//       the usage chunk in streaming mode). With usage unknown but
+				//       completed < total, assume truncation — the retry is idempotent
+				//       (only adds missing cellIds via seenIds dedup).
 				// Seen on non-GPT tokenizers (Gemma, Llama) where per-decision tokens are
 				// denser than estimated. Retry once non-streaming with doubled max_tokens
 				// and emit only the cellIds we haven't already seen — this avoids duplicate
 				// decision events on the client while completing the frame.
 				// -----------------------------------------------------------------------
+				const usageReportsCap =
+					usage !== null && billedTokens >= Math.floor(maxOutputTokens * 0.95);
+				const usageUnknown = usage === null;
 				const hitMaxTokens =
-					completed > 0 &&
-					completed < total &&
-					billedTokens >= Math.floor(maxOutputTokens * 0.95);
+					completed > 0 && completed < total && (usageReportsCap || usageUnknown);
 				if (hitMaxTokens) {
 					const retryMaxTokens = Math.min(maxOutputTokens * 2, 131_072);
+					const reason = usageUnknown ? 'usage=unknown' : `billedTokens=${billedTokens}/${maxOutputTokens}`;
 					console.log(
 						`[NLCA STREAM] max-tokens retry frame=${frameId} ${completed}/${total} ` +
-							`billedTokens=${billedTokens}/${maxOutputTokens} → retry with max_tokens=${retryMaxTokens}`
+							`${reason} → retry with max_tokens=${retryMaxTokens}`
 					);
 					try {
 						const retryBody = { ...fallbackBody, max_tokens: retryMaxTokens };
