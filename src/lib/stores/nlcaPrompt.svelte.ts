@@ -1324,6 +1324,16 @@ export function getPresetById(id: string): PromptPreset | undefined {
 	return PROMPT_PRESETS.find(p => p.id === id);
 }
 
+/**
+ * Recover a preset from its full task text. Useful when older persisted
+ * experiment metadata lost `promptPresetId` but still kept the exact task.
+ */
+export function getPresetByTask(task: string): PromptPreset | undefined {
+	const normalizedTask = task.trim();
+	if (!normalizedTask) return undefined;
+	return PROMPT_PRESETS.find((preset) => preset.task.trim() === normalizedTask);
+}
+
 // ============================================================================
 // DEFAULT VALUES
 // ============================================================================

@@ -1,7 +1,33 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { dev } from '$app/environment';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
+import { existsSync } from 'fs';
+import { mkdir, readFile, writeFile, appendFile } from 'fs/promises';
 import { join } from 'path';
+import { enqueueFileMutation } from '$lib/server/fileMutationQueue.js';
+
+// #region agent log
+let debugCsvInFlight = 0;
+function postDebugLog(
+	location: string,
+	message: string,
+	data: Record<string, unknown>,
+	hypothesisId: string
+): void {
+	fetch('http://127.0.0.1:7569/ingest/ff2fa46d-1b83-4d22-8de5-bf276ff29f2d', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '9e7e3d' },
+		body: JSON.stringify({
+			sessionId: '9e7e3d',
+			runId: 'initial',
+			hypothesisId,
+			location,
+			message,
+			data,
+			timestamp: Date.now()
+		})
+	}).catch(() => {});
+}
+// #endregion
 
 /**
  * Single append-only CSV of every simulation run, written whenever the UI
@@ -24,6 +50,7 @@ const COLUMNS = [
 	'neighborhood',
 	'cellColorEnabled',
 	'taskDescription',
+	'promptPresetId',
 	'memoryWindow',
 	'maxConcurrency',
 	'batchSize',
@@ -110,10 +137,10 @@ function parseCsv(text: string): Row[] {
 	});
 }
 
-function ensureDirAndHeader(): void {
-	if (!existsSync(CSV_DIR)) mkdirSync(CSV_DIR, { recursive: true });
+async function ensureDirAndHeader(): Promise<void> {
+	if (!existsSync(CSV_DIR)) await mkdir(CSV_DIR, { recursive: true });
 	if (!existsSync(CSV_PATH)) {
-		writeFileSync(CSV_PATH, COLUMNS.join(',') + '\n', 'utf8');
+		await writeFile(CSV_PATH, COLUMNS.join(',') + '\n', 'utf8');
 	}
 }
 
@@ -121,19 +148,19 @@ function rowToLine(row: Row): string {
 	return COLUMNS.map((col) => csvEscape(row[col] ?? '')).join(',') + '\n';
 }
 
-function readAllRows(): Row[] {
+async function readAllRows(): Promise<Row[]> {
 	if (!existsSync(CSV_PATH)) return [];
 	try {
-		return parseCsv(readFileSync(CSV_PATH, 'utf8'));
+		return parseCsv(await readFile(CSV_PATH, 'utf8'));
 	} catch {
 		return [];
 	}
 }
 
-function writeAllRows(rows: Row[]): void {
-	ensureDirAndHeader();
+async function writeAllRows(rows: Row[]): Promise<void> {
+	await ensureDirAndHeader();
 	const body = COLUMNS.join(',') + '\n' + rows.map(rowToLine).join('');
-	writeFileSync(CSV_PATH, body, 'utf8');
+	await writeFile(CSV_PATH, body, 'utf8');
 }
 
 function normaliseIncomingRow(input: Partial<Row>): Row {
@@ -148,7 +175,7 @@ function normaliseIncomingRow(input: Partial<Row>): Row {
 /** GET — return all rows as JSON. Used by the Runs panel on load. */
 export const GET: RequestHandler = async () => {
 	if (!dev) throw error(403, 'Runs CSV only available in dev mode');
-	return json({ rows: readAllRows() });
+	return json({ rows: await readAllRows() });
 };
 
 /**
@@ -165,22 +192,57 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	if (!body.id) throw error(400, 'Missing id');
 
-	ensureDirAndHeader();
-	const existing = readAllRows();
-	const idx = existing.findIndex((r) => r.id === body.id);
-	const incoming = normaliseIncomingRow(body);
+	// #region agent log
+	debugCsvInFlight += 1;
+	const enqueueStartedAt = performance.now();
+	const inFlightAtEnqueue = debugCsvInFlight;
+	let workStartedAt = 0;
+	// #endregion
 
-	if (idx === -1) {
-		// New row — append.
-		appendFileSync(CSV_PATH, rowToLine(incoming), 'utf8');
-	} else {
+	await enqueueFileMutation(CSV_PATH, async () => {
+		// #region agent log
+		workStartedAt = performance.now();
+		// #endregion
+		await ensureDirAndHeader();
+		const existing = await readAllRows();
+		const idx = existing.findIndex((r) => r.id === body.id);
+		const incoming = normaliseIncomingRow(body);
+
+		if (idx === -1) {
+			// New row — append.
+			await appendFile(CSV_PATH, rowToLine(incoming), 'utf8');
+			return;
+		}
+
 		// Update: preserve createdAt, bump updatedAt, overlay new fields.
 		const merged: Row = { ...existing[idx]!, ...incoming };
 		merged.createdAt = existing[idx]!.createdAt || incoming.createdAt;
 		merged.updatedAt = String(Date.now());
 		existing[idx] = merged;
-		writeAllRows(existing);
+		await writeAllRows(existing);
+	});
+
+	// #region agent log
+	const now = performance.now();
+	const queueWaitMs = Math.round((workStartedAt - enqueueStartedAt) * 100) / 100;
+	const workDurationMs = Math.round((now - workStartedAt) * 100) / 100;
+	const totalDurationMs = Math.round((now - enqueueStartedAt) * 100) / 100;
+	if (totalDurationMs >= 100 || inFlightAtEnqueue >= 3) {
+		postDebugLog(
+			'src/routes/api/nlca-runs-csv/+server.ts:POST',
+			'CSV POST timing',
+			{
+				runId: body.id,
+				inFlightAtEnqueue,
+				queueWaitMs,
+				workDurationMs,
+				totalDurationMs
+			},
+			'I'
+		);
 	}
+	debugCsvInFlight = Math.max(0, debugCsvInFlight - 1);
+	// #endregion
 
 	return json({ ok: true });
 };
@@ -190,7 +252,9 @@ export const DELETE: RequestHandler = async ({ url }) => {
 	if (!dev) throw error(403, 'Runs CSV only available in dev mode');
 	const id = url.searchParams.get('id');
 	if (!id) throw error(400, 'Missing id');
-	const rows = readAllRows().filter((r) => r.id !== id);
-	writeAllRows(rows);
+	await enqueueFileMutation(CSV_PATH, async () => {
+		const rows = (await readAllRows()).filter((r) => r.id !== id);
+		await writeAllRows(rows);
+	});
 	return json({ ok: true });
 };

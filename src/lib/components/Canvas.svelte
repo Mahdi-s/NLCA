@@ -105,6 +105,31 @@
 	const nlcaPromptState = getNlcaPromptState();
 	const nlcaUseCellColors = $derived.by(() => nlcaMode && nlcaPromptState.cellColorHexEnabled);
 	let nlcaCellColorsPacked: Uint32Array | null = null;
+	// #region agent log
+	function postDebugLog(
+		location: string,
+		message: string,
+		data: Record<string, unknown>,
+		hypothesisId: string
+	): void {
+		fetch('http://127.0.0.1:7569/ingest/ff2fa46d-1b83-4d22-8de5-bf276ff29f2d', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '9e7e3d' },
+			body: JSON.stringify({
+				sessionId: '9e7e3d',
+				runId: 'initial',
+				hypothesisId,
+				location,
+				message,
+				data,
+				timestamp: Date.now()
+			})
+		}).catch(() => {});
+	}
+
+	let debugLastAppliedExperimentId: string | null = null;
+	let debugLastAnimationPerfLogAt = 0;
+	// #endregion
 
 	function setPackedColorStatus(packed: number, status: 'missing' | 'valid' | 'invalid'): number {
 		const statusBits = status === 'valid' ? 1 : status === 'invalid' ? 2 : 0;
@@ -294,15 +319,18 @@
 		const displayGrid = active.viewGrid ?? active.currentGrid;
 		if (!displayGrid) return;
 
+		// #region agent log
+		const applyStartedAt = performance.now();
+		// #endregion
 		simulation.setCellData(displayGrid);
 
 		if (nlcaUseCellColors && active.currentColorsHex && active.currentColorStatus8) {
-			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== active.currentGrid.length) {
-				nlcaCellColorsPacked = new Uint32Array(active.currentGrid.length);
+			if (!nlcaCellColorsPacked || nlcaCellColorsPacked.length !== displayGrid.length) {
+				nlcaCellColorsPacked = new Uint32Array(displayGrid.length);
 			}
 			mergePackedColors(
 				nlcaCellColorsPacked,
-				active.currentGrid,
+				displayGrid,
 				active.currentColorsHex,
 				active.currentColorStatus8
 			);
@@ -311,6 +339,24 @@
 			nlcaCellColorsPacked = null;
 			simulation.clearCellColors();
 		}
+		// #region agent log
+		const applyDurationMs = Math.round((performance.now() - applyStartedAt) * 100) / 100;
+		if (debugLastAppliedExperimentId !== active.id || applyDurationMs >= 12) {
+			debugLastAppliedExperimentId = active.id;
+			postDebugLog(
+				'src/lib/components/Canvas.svelte:297',
+				'Canvas applied experiment grid to renderer',
+				{
+					experimentId: active.id,
+					generation: active.viewGeneration || active.currentGeneration,
+					totalCells: displayGrid.length,
+					hasColors: !!(nlcaUseCellColors && active.currentColorsHex && active.currentColorStatus8),
+					applyDurationMs
+				},
+				'E'
+			);
+		}
+		// #endregion
 	});
 
 	function newRunId(): string {
@@ -1275,6 +1321,9 @@
 		});
 
 		// Always render
+		// #region agent log
+		const renderStartedAt = performance.now();
+		// #endregion
 		simulation.render(canvasWidth, canvasHeight);
 
 		// Also render to recording canvas if recording
@@ -1289,7 +1338,35 @@
 		}
 
 		// Update alive cells count (sync version for display)
+		// #region agent log
+		const aliveCountStartedAt = performance.now();
+		// #endregion
 		simState.aliveCells = simulation.countAliveCells();
+		// #region agent log
+		const now = performance.now();
+		const renderDurationMs = Math.round((aliveCountStartedAt - renderStartedAt) * 100) / 100;
+		const aliveCountDurationMs = Math.round((now - aliveCountStartedAt) * 100) / 100;
+		if (
+			nlcaMode &&
+			now - debugLastAnimationPerfLogAt >= 2000 &&
+			(renderDurationMs >= 8 || aliveCountDurationMs >= 8)
+		) {
+			debugLastAnimationPerfLogAt = now;
+			postDebugLog(
+				'src/lib/components/Canvas.svelte:1277',
+				'Canvas frame work exceeded budget',
+				{
+					activeId: nlcaStore.active?.id ?? null,
+					renderDurationMs,
+					aliveCountDurationMs,
+					canvasWidth,
+					canvasHeight,
+					isPlaying: simState.isPlaying
+				},
+				'E'
+			);
+		}
+		// #endregion
 	}
 
 	// Track axes visibility changes to trigger axis animation

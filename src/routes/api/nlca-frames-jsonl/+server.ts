@@ -1,13 +1,38 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { dev } from '$app/environment';
-import { mkdirSync, existsSync, writeFileSync, appendFileSync, rmSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
+import { mkdir, writeFile, appendFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { redactExperimentConfigForPersistence, type ExperimentConfig } from '$lib/nlca/types.js';
+import { enqueueFileMutation } from '$lib/server/fileMutationQueue.js';
+import { deriveFrameCount } from './frameCount.js';
 import {
 	findLatestJsonlFrame,
-	findJsonlFrameByGeneration,
-	countJsonlLines
+	findJsonlFrameByGeneration
 } from './jsonlReader.js';
+
+// #region agent log
+function postDebugLog(
+	location: string,
+	message: string,
+	data: Record<string, unknown>,
+	hypothesisId: string
+): void {
+	fetch('http://127.0.0.1:7569/ingest/ff2fa46d-1b83-4d22-8de5-bf276ff29f2d', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '9e7e3d' },
+		body: JSON.stringify({
+			sessionId: '9e7e3d',
+			runId: 'initial',
+			hypothesisId,
+			location,
+			message,
+			data,
+			timestamp: Date.now()
+		})
+	}).catch(() => {});
+}
+// #endregion
 
 /**
  * Dev-only, file-system-backed JSONL tape.
@@ -94,7 +119,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const metaPath = join(dir, 'meta.json');
 	if (existsSync(metaPath)) {
 		try {
-			meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+			meta = JSON.parse(await readFile(metaPath, 'utf8'));
 		} catch {
 			meta = null;
 		}
@@ -102,25 +127,62 @@ export const GET: RequestHandler = async ({ url }) => {
 
 	const framesPath = join(dir, 'frames.jsonl');
 	if (!existsSync(framesPath)) return json({ ...empty, meta });
+	// #region agent log
+	const requestStartedAt = performance.now();
+	// #endregion
 
 	// Stream the file instead of loading it wholesale. `latest` needs only the
 	// tail of the file; `frame` scans linearly with readline. Keeps server
 	// memory flat as tapes grow into multi-MB territory.
+	// #region agent log
+	const latestStartedAt = performance.now();
+	// #endregion
 	const latestRecord = (await findLatestJsonlFrame(framesPath)) as FrameRecord | null;
+	// #region agent log
+	const latestDurationMs = Math.round((performance.now() - latestStartedAt) * 100) / 100;
+	// #endregion
 	const latest = latestRecord ? expandFrame(latestRecord) : null;
 
 	const requested = url.searchParams.get('generation');
 	const wantedGen = requested !== null ? Number(requested) : null;
 	let match: ExpandedFrame | null = null;
+	// #region agent log
+	let matchDurationMs = 0;
+	// #endregion
 	if (wantedGen !== null && Number.isFinite(wantedGen)) {
+		// #region agent log
+		const matchStartedAt = performance.now();
+		// #endregion
 		const matchRecord = (await findJsonlFrameByGeneration(
 			framesPath,
 			wantedGen
 		)) as FrameRecord | null;
+		// #region agent log
+		matchDurationMs = Math.round((performance.now() - matchStartedAt) * 100) / 100;
+		// #endregion
 		if (matchRecord) match = expandFrame(matchRecord);
 	}
 
-	const frameCount = await countJsonlLines(framesPath);
+	const frameCount = deriveFrameCount(meta as { progress?: { current?: unknown } } | null, latestRecord);
+	// #region agent log
+	const totalDurationMs = Math.round((performance.now() - requestStartedAt) * 100) / 100;
+	if (totalDurationMs >= 50 || latestDurationMs >= 50 || matchDurationMs >= 50) {
+		postDebugLog(
+			'src/routes/api/nlca-frames-jsonl/+server.ts:123',
+			'JSONL frame request timing',
+			{
+				runId,
+				wantedGeneration: wantedGen,
+				latestDurationMs,
+				matchDurationMs,
+				totalDurationMs,
+				latestGeneration: latestRecord?.generation ?? null,
+				frameCount
+			},
+			'F'
+		);
+	}
+	// #endregion
 
 	return json({
 		meta,
@@ -142,7 +204,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	const runId = validateRunId(body.runId);
 	const dir = runDir(runId);
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+	if (!existsSync(dir)) await mkdir(dir, { recursive: true });
 
 	if (body.meta !== undefined) {
 		const metaPath = join(dir, 'meta.json');
@@ -150,7 +212,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (meta.config && typeof meta.config === 'object') {
 			meta.config = redactExperimentConfigForPersistence(meta.config as ExperimentConfig);
 		}
-		writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+		await enqueueFileMutation(metaPath, async () => {
+			await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+		});
 	}
 
 	if (body.frame !== undefined) {
@@ -159,7 +223,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		const framesPath = join(dir, 'frames.jsonl');
 		const line = body.frame.endsWith('\n') ? body.frame : body.frame + '\n';
-		appendFileSync(framesPath, line, 'utf8');
+		await enqueueFileMutation(framesPath, async () => {
+			await appendFile(framesPath, line, 'utf8');
+		});
+	}
+
+	// Batched frame appends — N lines in a single append. Callers buffer
+	// on the client and flush as one HTTP round-trip to cut persistence
+	// pressure by ~N× when many experiments run concurrently.
+	if ((body as { frames?: unknown }).frames !== undefined) {
+		const frames = (body as { frames?: unknown }).frames;
+		if (!Array.isArray(frames) || !frames.every((f) => typeof f === 'string')) {
+			throw error(400, 'frames must be an array of pre-serialised JSONL lines');
+		}
+		if (frames.length > 0) {
+			const framesPath = join(dir, 'frames.jsonl');
+			const blob = (frames as string[])
+				.map((f) => (f.endsWith('\n') ? f : f + '\n'))
+				.join('');
+			await enqueueFileMutation(framesPath, async () => {
+				await appendFile(framesPath, blob, 'utf8');
+			});
+		}
 	}
 
 	return json({ ok: true });
@@ -170,7 +255,7 @@ export const DELETE: RequestHandler = async ({ url }) => {
 	const runId = validateRunId(url.searchParams.get('runId'));
 	const dir = runDir(runId);
 	if (existsSync(dir)) {
-		rmSync(dir, { recursive: true, force: true });
+		await rm(dir, { recursive: true, force: true });
 	}
 	return json({ ok: true });
 };

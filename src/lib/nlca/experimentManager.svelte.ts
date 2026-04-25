@@ -113,6 +113,29 @@ function buildPromptConfig(config: ExperimentConfig): PromptConfig {
 	};
 }
 
+// #region agent log
+function postDebugLog(
+	location: string,
+	message: string,
+	data: Record<string, unknown>,
+	hypothesisId: string
+): void {
+	fetch('http://127.0.0.1:7569/ingest/ff2fa46d-1b83-4d22-8de5-bf276ff29f2d', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '9e7e3d' },
+		body: JSON.stringify({
+			sessionId: '9e7e3d',
+			runId: 'initial',
+			hypothesisId,
+			location,
+			message,
+			data,
+			timestamp: Date.now()
+		})
+	}).catch(() => {});
+}
+// #endregion
+
 export interface PlaybackState {
 	id: string;
 	currentFrame: number;
@@ -163,6 +186,9 @@ export class ExperimentManager {
 	 * detect they've been superseded and bail out cleanly. */
 	private playbackToken = 0;
 	private playbackCancelAnim: (() => void) | null = null;
+	// #region agent log
+	private debugBackgroundLogGeneration = new Map<string, number>();
+	// #endregion
 
 	/** Fetch live pricing for this experiment's model and project the full-run
 	 * cost at completion. Called when the experiment is created and whenever
@@ -352,6 +378,27 @@ export class ExperimentManager {
 					exp.currentGeneration = generation;
 					exp.progress = { current: generation, target: exp.progress.target };
 
+					// #region agent log
+					if (this.activeId && this.activeId !== id) {
+						const lastLoggedGeneration = this.debugBackgroundLogGeneration.get(id) ?? 0;
+						if (generation - lastLoggedGeneration >= 5) {
+							this.debugBackgroundLogGeneration.set(id, generation);
+							postDebugLog(
+								'src/lib/nlca/experimentManager.svelte.ts:349',
+								'Background experiment advanced while another experiment was active',
+								{
+									experimentId: id,
+									activeId: this.activeId,
+									generation,
+									target: exp.progress.target,
+									status: exp.status
+								},
+								'B'
+							);
+						}
+					}
+					// #endregion
+
 					// Clear loading skeleton when first frame lands — setActive() may have set
 					// hydration='loading' before the compute loop produced a grid.
 					if (this.hydration[id] === 'loading') {
@@ -400,8 +447,12 @@ export class ExperimentManager {
 						)
 					);
 
+					// Hot-path: progress-only update (just writes meta.json). Per-tick
+					// full syncMeta was the primary cause of HTTP saturation when
+					// multiple experiments were running. CSV + SQLite are reserved
+					// for actual state transitions below.
 					if (generation % 5 === 0) {
-						void persistence.syncMeta(exp);
+						persistence.syncProgress(exp);
 					}
 				} catch (err) {
 					if (controller.signal.aborted) break;
@@ -423,6 +474,7 @@ export class ExperimentManager {
 					if (isRateLimit) {
 						exp.status = 'paused';
 						exp.errorMessage = `Rate limit — paused. Resume when your provider quota resets. (${msg.slice(0, 160)})`;
+						void persistence.flushPendingFrames(id);
 						void persistence.syncMeta(exp, { errorMessage: exp.errorMessage });
 						console.warn(
 							`[ExperimentManager] Experiment ${id} paused on rate limit:`,
@@ -433,6 +485,7 @@ export class ExperimentManager {
 
 					exp.status = 'error';
 					exp.errorMessage = msg.slice(0, 200);
+					void persistence.flushPendingFrames(id);
 					void persistence.syncMeta(exp, { errorMessage: exp.errorMessage });
 					console.error(`[ExperimentManager] Experiment ${id} error:`, err);
 					return;
@@ -441,6 +494,7 @@ export class ExperimentManager {
 
 			if (!controller.signal.aborted && exp.progress.current >= exp.progress.target) {
 				exp.status = 'completed';
+				void persistence.flushPendingFrames(id);
 				void persistence.syncMeta(exp);
 			}
 		};
@@ -583,6 +637,7 @@ export class ExperimentManager {
 		}
 
 		exp.status = 'paused';
+		void persistence.flushPendingFrames(id);
 		void persistence.syncMeta(exp);
 	}
 
@@ -733,6 +788,10 @@ export class ExperimentManager {
 		if (!(id in this.experiments)) return;
 		if (this.playback) this.stopPlayback();
 
+		// #region agent log
+		const previousActiveId = this.activeId;
+		// #endregion
+
 		// Supersede any in-flight hydration for the previously-active experiment so
 		// a stale slow-path load can't flip a background experiment to 'ready' after
 		// the user has already switched away.
@@ -745,6 +804,25 @@ export class ExperimentManager {
 		this.lastAccessedAt.set(id, ++this.lruClock);
 		const exp = this.experiments[id];
 		if (!exp) return;
+
+		// #region agent log
+		postDebugLog(
+			'src/lib/nlca/experimentManager.svelte.ts:746',
+			'Experiment switch requested',
+			{
+				fromId: previousActiveId,
+				toId: id,
+				status: exp.status,
+				hasGridInMemory: exp.currentGrid != null,
+				progressCurrent: exp.progress.current,
+				progressTarget: exp.progress.target,
+				totalExperiments: Object.keys(this.experiments).length,
+				runningExperiments: Object.values(this.experiments).filter((candidate) => candidate.status === 'running').length,
+				cachedExperiments: Object.values(this.experiments).filter((candidate) => candidate.currentGrid != null).length
+			},
+			'A|C'
+		);
+		// #endregion
 
 		// Fast path: grid already in memory (running, cached, or recently loaded).
 		if (exp.currentGrid) {
@@ -773,6 +851,10 @@ export class ExperimentManager {
 	}
 
 	private enforceLruBudget(): void {
+		// #region agent log
+		const cachedBefore = Object.values(this.experiments).filter((e) => e.currentGrid != null).length;
+		const evictedIds: string[] = [];
+		// #endregion
 		const evictable = Object.values(this.experiments)
 			.filter(
 				(e) =>
@@ -788,6 +870,9 @@ export class ExperimentManager {
 		while (evictable.length > ExperimentManager.LRU_BUDGET) {
 			const victim = evictable.shift();
 			if (!victim) break;
+			// #region agent log
+			evictedIds.push(victim.id);
+			// #endregion
 			victim.currentGrid = null;
 			victim.currentColorsHex = null;
 			victim.currentColorStatus8 = null;
@@ -800,18 +885,77 @@ export class ExperimentManager {
 			}
 			this.hydration[victim.id] = 'idle';
 		}
+		// #region agent log
+		if (evictedIds.length > 0) {
+			postDebugLog(
+				'src/lib/nlca/experimentManager.svelte.ts:788',
+				'LRU evicted experiment grids from memory',
+				{
+					activeId: this.activeId,
+					evictedIds,
+					cachedBefore,
+					cachedAfter: Object.values(this.experiments).filter((e) => e.currentGrid != null).length,
+					budget: ExperimentManager.LRU_BUDGET
+				},
+				'C'
+			);
+		}
+		// #endregion
 	}
 
 	private async hydrateFromDisk(id: string, token: number): Promise<void> {
 		const exp = this.experiments[id];
 		if (!exp) return;
+		// #region agent log
+		const startedAt = performance.now();
+		postDebugLog(
+			'src/lib/nlca/experimentManager.svelte.ts:808',
+			'Started hydrating experiment from disk',
+			{
+				experimentId: id,
+				token,
+				activeId: this.activeId,
+				progressCurrent: exp.progress.current,
+				status: exp.status
+			},
+			'C|D'
+		);
+		// #endregion
 
 		const frame = await persistence.loadFrame(id);
-		if (this.rehydrateToken.get(id) !== token) return;
+		if (this.rehydrateToken.get(id) !== token) {
+			// #region agent log
+			postDebugLog(
+				'src/lib/nlca/experimentManager.svelte.ts:810',
+				'Discarded stale hydration result after a later switch',
+				{
+					experimentId: id,
+					token,
+					activeId: this.activeId,
+					durationMs: Math.round((performance.now() - startedAt) * 100) / 100
+				},
+				'D'
+			);
+			// #endregion
+			return;
+		}
 
 		if (!frame) {
 			this.hydration[id] = 'missing';
 			exp.noTapeData = true;
+			// #region agent log
+			postDebugLog(
+				'src/lib/nlca/experimentManager.svelte.ts:813',
+				'Experiment hydration found no frame data',
+				{
+					experimentId: id,
+					token,
+					activeId: this.activeId,
+					durationMs: Math.round((performance.now() - startedAt) * 100) / 100
+				},
+				'C|D'
+			);
+			// #endregion
 			return;
 		}
 
@@ -837,6 +981,22 @@ export class ExperimentManager {
 		}
 		exp.noTapeData = false;
 		this.hydration[id] = 'ready';
+		// #region agent log
+		postDebugLog(
+			'src/lib/nlca/experimentManager.svelte.ts:839',
+			'Experiment hydration completed',
+			{
+				experimentId: id,
+				token,
+				activeId: this.activeId,
+				durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+				generation: frame.generation,
+				frameCount: frame.frameCount,
+				totalCells
+			},
+			'C|D'
+		);
+		// #endregion
 	}
 
 	async seekToGeneration(id: string, generation: number): Promise<void> {

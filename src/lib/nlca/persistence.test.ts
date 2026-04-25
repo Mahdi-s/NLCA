@@ -23,7 +23,7 @@ describe('persistence.loadAllMeta', () => {
                 return Promise.resolve({
                     ok: true,
                     json: () => Promise.resolve({
-                        rows: [{ id: 'exp-1', label: 'From CSV', model: 'gpt', gridWidth: '10', gridHeight: '10', neighborhood: 'moore', frameCount: '5', targetFrames: '50', createdAt: '1000', totalCost: '0.01', status: 'paused', dbFilename: '/exp-1.sqlite3' }]
+                        rows: [{ id: 'exp-1', label: 'From CSV', model: 'gpt', gridWidth: '10', gridHeight: '10', neighborhood: 'moore', promptPresetId: 'face-robot', frameCount: '5', targetFrames: '50', createdAt: '1000', totalCost: '0.01', status: 'paused', dbFilename: '/exp-1.sqlite3' }]
                     })
                 } as Response);
             }
@@ -34,6 +34,7 @@ describe('persistence.loadAllMeta', () => {
         expect(metas).toHaveLength(1);
         expect(metas[0].id).toBe('exp-1');
         expect(metas[0].label).toBe('From CSV');
+        expect(metas[0].config.promptPresetId).toBe('face-robot');
     });
 
     test('returns empty array when CSV endpoint fails', async () => {
@@ -114,7 +115,7 @@ describe('persistence.syncMeta', () => {
         const exp = {
             id: 'exp-1',
             label: 'Test',
-            config: { apiProvider: 'openrouter' as const, model: 'm', gridWidth: 10, gridHeight: 10, neighborhood: 'moore' as const, cellColorEnabled: false, taskDescription: 't', useAdvancedMode: false, memoryWindow: 3, maxConcurrency: 50, batchSize: 200, frameBatched: true, frameStreamed: true, cellTimeoutMs: 30000, compressPayload: false, deduplicateRequests: false, targetFrames: 50, apiKey: '', sambaNovaApiKey: '', temperature: 0, maxOutputTokens: 64 },
+            config: { apiProvider: 'openrouter' as const, model: 'm', gridWidth: 10, gridHeight: 10, neighborhood: 'moore' as const, cellColorEnabled: false, taskDescription: 't', promptPresetId: 'face-robot', useAdvancedMode: false, memoryWindow: 3, maxConcurrency: 50, batchSize: 200, frameBatched: true, frameStreamed: true, cellTimeoutMs: 30000, compressPayload: false, deduplicateRequests: false, targetFrames: 50, apiKey: '', sambaNovaApiKey: '', temperature: 0, maxOutputTokens: 64 },
             status: 'running' as const,
             progress: { current: 5, target: 50 },
             createdAt: 1000,
@@ -128,5 +129,12 @@ describe('persistence.syncMeta', () => {
         const urls = (fetchMock.mock.calls as FetchArgs[]).map((call) => String(call[0]));
         expect(urls.some((u: string) => u.includes('/api/nlca-runs-csv'))).toBe(true);
         expect(urls.some((u: string) => u.includes('/api/nlca-frames-jsonl'))).toBe(true);
+
+        const csvCall = (fetchMock.mock.calls as FetchArgs[]).find((call) =>
+            String(call[0]).includes('/api/nlca-runs-csv')
+        );
+        expect(csvCall).toBeTruthy();
+        const csvBody = JSON.parse(String(csvCall?.[1]?.body)) as { promptPresetId?: string };
+        expect(csvBody.promptPresetId).toBe('face-robot');
     });
 });

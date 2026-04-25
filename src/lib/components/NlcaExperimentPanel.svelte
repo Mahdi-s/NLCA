@@ -13,6 +13,29 @@
 	let { open, onclose, onNew }: Props = $props();
 	const manager = getNlcaStore();
 
+	// #region agent log
+	function postDebugLog(
+		location: string,
+		message: string,
+		data: Record<string, unknown>,
+		hypothesisId: string
+	): void {
+		fetch('http://127.0.0.1:7569/ingest/ff2fa46d-1b83-4d22-8de5-bf276ff29f2d', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '9e7e3d' },
+			body: JSON.stringify({
+				sessionId: '9e7e3d',
+				runId: 'initial',
+				hypothesisId,
+				location,
+				message,
+				data,
+				timestamp: Date.now()
+			})
+		}).catch(() => {});
+	}
+	// #endregion
+
 	let confirmDeleteId = $state<string | null>(null);
 	let extendId = $state<string | null>(null);
 	let extendFrames = $state(10);
@@ -65,6 +88,34 @@
 	const unfavoriteExperiments = $derived(
 		manager.experimentList.filter((e) => !favorites.has(e.id))
 	);
+	// #region agent log
+	let debugPanelRecomputeCount = 0;
+	let debugLastPanelLogAt = 0;
+
+	$effect(() => {
+		if (!open) return;
+		const allExperiments = manager.experimentList;
+		const favoriteList = favoriteExperiments;
+		const unfavoriteList = unfavoriteExperiments;
+		debugPanelRecomputeCount += 1;
+		const now = performance.now();
+		if (debugPanelRecomputeCount <= 4 || now - debugLastPanelLogAt >= 750) {
+			debugLastPanelLogAt = now;
+			postDebugLog(
+				'src/lib/components/NlcaExperimentPanel.svelte:68',
+				'Experiment panel recomputed visible lists',
+				{
+					activeId: manager.activeId,
+					recomputeCount: debugPanelRecomputeCount,
+					totalExperiments: allExperiments.length,
+					favoriteCount: favoriteList.length,
+					unfavoriteCount: unfavoriteList.length
+				},
+				'A'
+			);
+		}
+	});
+	// #endregion
 
 	function statusIcon(status: Experiment['status']): string {
 		switch (status) {

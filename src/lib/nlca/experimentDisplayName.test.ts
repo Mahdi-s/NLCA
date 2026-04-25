@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { experimentDisplayName } from './experimentDisplayName.js';
 import type { ExperimentConfig } from './types.js';
+import { getPresetById } from '$lib/stores/nlcaPrompt.svelte.js';
 
 function mkConfig(overrides: Partial<ExperimentConfig> = {}): ExperimentConfig {
 	return {
@@ -49,6 +50,15 @@ describe('experimentDisplayName', () => {
 			config: { promptPresetId: 'face-baby', taskDescription: 'Together with your neighbors, paint a close-up portrait of a smiling baby.' }
 		});
 		expect(experimentDisplayName(exp)).toBe('Face: Baby');
+	});
+
+	test('recovers the preset name from the task text when promptPresetId was lost during persistence', () => {
+		const robotTask = getPresetById('face-robot')!.task;
+		const exp = mkExp({
+			label: '[SN] Together with your neighbors, paint a… · grok-4.1-fast · 20×20',
+			config: { taskDescription: robotTask }
+		});
+		expect(experimentDisplayName(exp)).toBe('Face: Robot');
 	});
 
 	test('falls back to the task description (truncated) when there is no preset', () => {
